@@ -207,6 +207,9 @@ private:
     QString localDownloadPathForSnapshot(const GameInfo &game, const QString &fileName) const;
     void loadQuarkGatewaySettings();
     void setQuarkGatewayStatus(const QString &status);
+    void startQuarkCookieHealthCheck();
+    QString quarkCookieHealthCheckPath() const;
+    bool isQuarkAuthFailureMessage(const QString &message) const;
 
     QString m_steamPath;
     QVariantList m_installedGames;

@@ -69,6 +69,9 @@ qt_add_qml_module(GameSaveCloudQt
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/components/ActionButton.qml
+        qml/components/EmptyState.qml
+        qml/components/SnapshotList.qml
 )
 
 target_include_directories(GameSaveCloudQt

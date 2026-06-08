@@ -271,6 +271,7 @@ SteamManager::SteamManager(QObject *parent)
                 m_logger.info(QStringLiteral("夸克本机网关已就绪：%1，远程目录 %2")
                                   .arg(m_webDavConfig.serverUrl, m_webDavConfig.remoteRootPath));
                 refreshCloudManifestFromRemote();
+                startQuarkCookieHealthCheck();
             });
 
     connect(&m_quarkGatewayManager, &QuarkGatewayManager::gatewayFailed, this,
@@ -1614,6 +1615,10 @@ void SteamManager::handleSnapshotDownloadFinished(
         ++m_pendingSnapshotDownloadFailureByAppId[appId];
         m_logger.warning(QStringLiteral("快照下载失败：%1，云端路径 %2，原因：%3")
                              .arg(game.displayName, remoteFilePath, message));
+        if (remoteFilePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)
+            && isQuarkAuthFailureMessage(message)) {
+            setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 可能已过期或下载鉴权异常：目录读取可能正常，但文件下载会失败。请在云同步设置中更新 Cookie 后重新连接。"));
+        }
     }
 
     int remaining = m_pendingSnapshotDownloadRemainingByAppId.value(appId, 0);
@@ -1660,12 +1665,29 @@ void SteamManager::handleCloudDataUploadFinished(
     const QString &operationId,
     const QString &message)
 {
+    if (operationId == QStringLiteral("quark-cookie-health-upload")) {
+        if (success) {
+            m_logger.info(QStringLiteral("夸克 Cookie 健康检查：探针文件已写入，开始验证读取能力"));
+            m_quarkGatewayManager.downloadDataFile(
+                quarkCookieHealthCheckPath(),
+                QStringLiteral("quark-cookie-health-download"));
+        } else {
+            const QString status = isQuarkAuthFailureMessage(message)
+                                       ? QStringLiteral("夸克 Cookie 健康检查失败：Cookie 可能已过期或鉴权异常，请更新 Cookie 后重新连接")
+                                       : QStringLiteral("夸克 Cookie 健康检查失败：无法写入探针文件，请查看日志确认 OpenList/夸克网关状态");
+            setQuarkGatewayStatus(status);
+            m_logger.warning(QStringLiteral("夸克 Cookie 健康检查写入失败：路径：%1，原因：%2").arg(remoteFilePath, message));
+        }
+        return;
+    }
+
     if (operationId.startsWith(QStringLiteral("cloud-game-upload:"))) {
         const QString appId = operationId.mid(QStringLiteral("cloud-game-upload:").length());
         const GameInfo game = gameByAppId(appId);
         const QString displayName = game.isValid() ? game.displayName : appId;
         if (success) {
             m_logger.info(QStringLiteral("游戏云端快照索引已更新：%1，路径：%2").arg(displayName, remoteFilePath));
+            refreshCloudSnapshotsForGame(appId);
         } else {
             m_logger.warning(QStringLiteral("游戏云端快照索引更新失败：%1，路径：%2，原因：%3").arg(displayName, remoteFilePath, message));
         }
@@ -1697,6 +1719,27 @@ void SteamManager::handleCloudDataDownloadFinished(
     const QByteArray &data,
     const QString &message)
 {
+    if (operationId == QStringLiteral("quark-cookie-health-download")) {
+        if (success) {
+            const QJsonObject payload = QJsonDocument::fromJson(data).object();
+            const bool ok = payload.value(QStringLiteral("type")).toString() == QStringLiteral("quark-cookie-health-check");
+            if (ok) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 健康检查通过：OpenList 本机网关可写入并读取文件，上传和下载快照可用"));
+                m_logger.info(QStringLiteral("夸克 Cookie 健康检查通过：探针文件读取成功，路径：%1").arg(remoteFilePath));
+            } else {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 健康检查异常：已读取探针文件，但内容不完整，请重新连接后再试"));
+                m_logger.warning(QStringLiteral("夸克 Cookie 健康检查异常：探针文件内容不符合预期，路径：%1").arg(remoteFilePath));
+            }
+        } else {
+            const QString status = isQuarkAuthFailureMessage(message)
+                                       ? QStringLiteral("夸克 Cookie 健康检查失败：Cookie 可能已过期或下载鉴权异常。若目录能打开但 zip 下载失败，请更新 Cookie 后重新连接")
+                                       : QStringLiteral("夸克 Cookie 健康检查失败：探针文件读取失败，请查看日志确认 OpenList/夸克网关状态");
+            setQuarkGatewayStatus(status);
+            m_logger.warning(QStringLiteral("夸克 Cookie 健康检查读取失败：路径：%1，原因：%2").arg(remoteFilePath, message));
+        }
+        return;
+    }
+
     if (operationId == QStringLiteral("cloud-root-refresh")) {
         if (success) {
             applyCloudRootManifest(data);
@@ -1705,6 +1748,9 @@ void SteamManager::handleCloudDataDownloadFinished(
             m_cloudManifestLoaded = true;
             m_cloudSnapshotRecordsByAppId.clear();
             applyCloudSnapshotRecordsToModel();
+            if (isQuarkAuthFailureMessage(message)) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 可能已过期或云端读取鉴权异常，请在云同步设置中更新 Cookie 后重新连接"));
+            }
             m_logger.warning(QStringLiteral("云端快照索引读取失败：%1；如果这是首次使用，上传快照后会自动创建。原因：%2")
                                  .arg(remoteFilePath, message));
         }
@@ -1738,14 +1784,17 @@ void SteamManager::handleCloudDataDownloadFinished(
                 cloudRecords,
                 QStringLiteral("已读取完整云端快照索引"),
                 QStringLiteral("已从该游戏的 snapshot-manifest.json 读取到完整快照列表，下载时会补齐本地缺失的 zip 文件"));
-            m_logger.info(QStringLiteral("游戏完整云端快照索引读取完成：%1，共 %2 个快照，路径：%3")
+            m_logger.info(QStringLiteral("游戏完整云端快照索引读取完成：%1，共 %2 个快照，路径：%3，方式：%4")
                               .arg(game.displayName)
                               .arg(cloudRecords.count())
-                              .arg(remoteFilePath));
+                              .arg(remoteFilePath, message));
             downloadSnapshotRecordsForGame(game, cloudRecords);
         } else {
             m_logger.warning(QStringLiteral("游戏完整云端快照索引读取失败：%1，路径：%2，原因：%3；已停止使用可能过期的云端摘要记录")
                                  .arg(game.displayName, remoteFilePath, message));
+            if (isQuarkAuthFailureMessage(message)) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 可能已过期或云端读取鉴权异常，请在云同步设置中更新 Cookie 后重新连接"));
+            }
             m_cloudSnapshotRecordsByAppId.insert(appId, QVariantList{});
             updateCloudSnapshotStatusForGame(
                 appId,
@@ -1783,12 +1832,15 @@ void SteamManager::handleCloudDataDownloadFinished(
                 cloudRecords.isEmpty()
                     ? QStringLiteral("已读取该游戏的 snapshot-manifest.json，但其中没有包含有效的 zip 文件名和云端路径")
                     : QStringLiteral("已从该游戏的 snapshot-manifest.json 读取到完整快照列表，可在弹窗中选择单个快照覆盖下载"));
-            m_logger.info(QStringLiteral("可选下载快照列表读取完成：%1，共 %2 个快照，路径：%3")
+            m_logger.info(QStringLiteral("可选下载快照列表读取完成：%1，共 %2 个快照，路径：%3，方式：%4")
                               .arg(game.displayName)
                               .arg(cloudRecords.count())
-                              .arg(remoteFilePath));
+                              .arg(remoteFilePath, message));
         } else {
             m_cloudSnapshotRecordsByAppId.insert(appId, QVariantList{});
+            if (isQuarkAuthFailureMessage(message)) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 可能已过期或云端读取鉴权异常，请在云同步设置中更新 Cookie 后重新连接"));
+            }
             updateCloudSnapshotStatusForGame(
                 appId,
                 {},
@@ -2801,4 +2853,60 @@ void SteamManager::setQuarkGatewayStatus(const QString &status)
 
     m_quarkGatewayStatus = status;
     emit quarkGatewayStatusChanged();
+}
+
+void SteamManager::startQuarkCookieHealthCheck()
+{
+    if (!m_webDavConfig.isValid()) {
+        return;
+    }
+
+    /*
+     * 夸克 Cookie 有一种比较迷惑的“半失效”状态：
+     * OpenList 仍然可以列目录，但真正下载文件时会返回 403 Forbidden
+     * 或 412 Precondition Failed。这里写入并读取一个很小的 JSON 探针，
+     * 用真实文件读写验证 Cookie、OpenList 网关、夸克下载鉴权是否仍然可用。
+     */
+    QJsonObject payload;
+    payload.insert(QStringLiteral("type"), QStringLiteral("quark-cookie-health-check"));
+    payload.insert(QStringLiteral("checkedAtUtc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    payload.insert(QStringLiteral("app"), QStringLiteral("GameSaveCloudQt"));
+
+    m_logger.info(QStringLiteral("开始夸克 Cookie 健康检查：将写入并读取探针文件 %1")
+                      .arg(quarkCookieHealthCheckPath()));
+    m_quarkGatewayManager.uploadDataFile(
+        quarkCookieHealthCheckPath(),
+        QJsonDocument(payload).toJson(QJsonDocument::Compact),
+        QStringLiteral("quark-cookie-health-upload"));
+}
+
+QString SteamManager::quarkCookieHealthCheckPath() const
+{
+    QString rootPath = m_webDavConfig.remoteRootPath.trimmed();
+    rootPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (rootPath.isEmpty()) {
+        rootPath = QStringLiteral("/Quark/GameSaveCloudQt");
+    }
+    if (!rootPath.startsWith(QLatin1Char('/'))) {
+        rootPath.prepend(QLatin1Char('/'));
+    }
+    while (rootPath.length() > 1 && rootPath.endsWith(QLatin1Char('/'))) {
+        rootPath.chop(1);
+    }
+
+    return rootPath + QStringLiteral("/.healthcheck.json");
+}
+
+bool SteamManager::isQuarkAuthFailureMessage(const QString &message) const
+{
+    const QString text = message.trimmed();
+    return text.contains(QStringLiteral("403"), Qt::CaseInsensitive)
+        || text.contains(QStringLiteral("412"), Qt::CaseInsensitive)
+        || text.contains(QStringLiteral("Forbidden"), Qt::CaseInsensitive)
+        || text.contains(QStringLiteral("Precondition Failed"), Qt::CaseInsensitive)
+        || text.contains(QStringLiteral("Unauthorized"), Qt::CaseInsensitive)
+        || text.contains(QStringLiteral("Authentication"), Qt::CaseInsensitive)
+        || text.contains(QStringLiteral("主机需要验证"))
+        || text.contains(QStringLiteral("需要验证"))
+        || text.contains(QStringLiteral("鉴权"));
 }

@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Effects
 import QtQuick.Layouts
+import "components"
 
 ApplicationWindow {
     id: root
@@ -88,12 +89,71 @@ ApplicationWindow {
     }
     function countBadgeBackground(kind) {
         if (kind === "cloud") {
-            return root.darkMode ? "#16384A" : "#E0F2FE"
+            return root.darkMode ? "#CC16384A" : "#E6E0F2FE"
         }
-        return root.darkMode ? "#243449" : "#EEF2FF"
+        return root.darkMode ? "#CC243449" : "#E6EEF2FF"
     }
     function countBadgeTextColor(kind) {
         return kind === "cloud" ? "#0284C7" : "#4F46E5"
+    }
+    function statBackground(key, value) {
+        if (key === "running" && value <= 0) {
+            return root.darkMode ? "#33334155" : "#66F8FAFC"
+        }
+        if (key === "running") {
+            return root.darkMode ? "#4022C55E" : "#DDF0FDF4"
+        }
+        if (key === "syncable") {
+            return root.darkMode ? "#4010B981" : "#DDECFEF6"
+        }
+        if (key === "manual") {
+            return root.darkMode ? "#40D97706" : "#DDFEF7E7"
+        }
+        return root.darkMode ? "#33334155" : "#DDF8FAFC"
+    }
+    function statBorderColor(key, value) {
+        if (key === "running" && value <= 0) {
+            return root.darkMode ? "#334155" : "#E2E8F0"
+        }
+        if (key === "running") {
+            return root.darkMode ? "#2F7D4A" : "#BBF7D0"
+        }
+        if (key === "syncable") {
+            return root.darkMode ? "#23735F" : "#A7F3D0"
+        }
+        if (key === "manual") {
+            return root.darkMode ? "#8B5B18" : "#FED7AA"
+        }
+        return root.darkMode ? "#334155" : "#E2E8F0"
+    }
+    function actionButtonBackground(kind, hovered) {
+        if (kind === "primary") {
+            return hovered ? "#006CBE" : root.accentColor
+        }
+        if (kind === "danger") {
+            return hovered
+                    ? (root.darkMode ? "#3A2029" : "#FEF2F2")
+                    : (root.darkMode ? "#222B3C" : "#FFFFFF")
+        }
+        return hovered ? (root.darkMode ? "#2A3448" : "#E7F3FF") : (root.darkMode ? "#222B3C" : "#F1F7FD")
+    }
+    function actionButtonBorder(kind, hovered) {
+        if (kind === "primary") {
+            return hovered ? "#0062AD" : root.accentColor
+        }
+        if (kind === "danger") {
+            return hovered ? "#EF4444" : (root.darkMode ? "#4B2630" : "#F3C6C6")
+        }
+        return hovered ? root.accentColor : (root.darkMode ? "#334155" : "#D8E4F2")
+    }
+    function actionButtonTextColor(kind, hovered) {
+        if (kind === "primary") {
+            return "#FFFFFF"
+        }
+        if (kind === "danger") {
+            return hovered ? "#DC2626" : (root.darkMode ? "#FCA5A5" : "#B91C1C")
+        }
+        return root.accentColor
     }
     function runningGameCount() {
         var count = 0
@@ -134,6 +194,38 @@ ApplicationWindow {
         root.detailLocalSnapshots = steamManager.snapshotsForGame(root.selectedGameAppId)
         root.detailCloudSnapshots = steamManager.cloudSnapshotsForGame(root.selectedGameAppId)
     }
+    function refreshSelectedLocalSnapshots() {
+        if (root.selectedGameAppId.length === 0) {
+            return
+        }
+        steamManager.refreshLocalSnapshotsForGame(root.selectedGameAppId)
+        root.detailLocalSnapshots = steamManager.snapshotsForGame(root.selectedGameAppId)
+    }
+    function refreshSelectedCloudSnapshots() {
+        if (root.selectedGameAppId.length === 0) {
+            return
+        }
+        steamManager.refreshCloudSnapshotsForGame(root.selectedGameAppId)
+        root.detailCloudSnapshots = steamManager.cloudSnapshotsForGame(root.selectedGameAppId)
+    }
+    function refreshSelectedDetailData() {
+        if (root.selectedGameAppId.length === 0) {
+            root.refreshDetailSnapshots()
+            return
+        }
+        root.refreshSelectedLocalSnapshots()
+        root.refreshSelectedCloudSnapshots()
+        root.refreshDetailSnapshots()
+    }
+    function switchDetailTab(index) {
+        root.gameDetailTab = index
+        if (index === 1) {
+            root.refreshSelectedLocalSnapshots()
+        } else if (index === 2) {
+            root.refreshSelectedCloudSnapshots()
+        }
+        root.refreshDetailSnapshots()
+    }
     function syncSelectedGame() {
         if (root.selectedGameAppId.length === 0) {
             return
@@ -158,7 +250,7 @@ ApplicationWindow {
         root.selectedGameAppId = game.appId
         root.selectedGame = game
         root.gameDetailTab = 0
-        root.refreshDetailSnapshots()
+        root.refreshSelectedDetailData()
     }
     function clearSelectedGame() {
         root.selectedGameIndex = -1
@@ -271,6 +363,14 @@ ApplicationWindow {
         function onInstalledGamesChanged() {
             root.syncSelectedGame()
         }
+
+        function onQuarkGatewayStatusChanged() {
+            if (steamManager.quarkGatewayStatus.indexOf("健康检查通过") >= 0
+                    || steamManager.quarkGatewayStatus.indexOf("网关已就绪") >= 0) {
+                steamManager.refreshCloudManifestFromRemote()
+                root.refreshSelectedCloudSnapshots()
+            }
+        }
     }
 
     Connections {
@@ -300,6 +400,16 @@ ApplicationWindow {
         width: Math.min(root.width - 80, 720)
         height: Math.min(root.height - 80, 520)
         anchors.centerIn: parent
+
+        onOpened: {
+            if (root.snapshotDialogMode === "download" || root.snapshotDialogMode === "cloud") {
+                root.snapshotDialogItems = steamManager.cloudSnapshotsForGame(root.snapshotDialogAppId)
+                steamManager.refreshCloudSnapshotsForGame(root.snapshotDialogAppId)
+            } else {
+                steamManager.refreshLocalSnapshotsForGame(root.snapshotDialogAppId)
+                root.snapshotDialogItems = steamManager.snapshotsForGame(root.snapshotDialogAppId)
+            }
+        }
 
         contentItem: Rectangle {
             color: root.panelColor
@@ -1001,6 +1111,33 @@ ApplicationWindow {
                                             maskSource: cardRoundMask
                                         }
 
+                                        Image {
+                                            id: cardAtmosphereImage
+                                            anchors.fill: parent
+                                            source: headerImageUrl
+                                            fillMode: Image.PreserveAspectCrop
+                                            asynchronous: true
+                                            cache: true
+                                            smooth: true
+                                            visible: status === Image.Ready
+                                            opacity: root.darkMode ? 0.20 : 0.24
+                                            scale: 1.12
+                                            layer.enabled: true
+                                            layer.smooth: true
+                                            layer.effect: MultiEffect {
+                                                blurEnabled: true
+                                                blur: 0.78
+                                                blurMax: 30
+                                                saturation: 0.85
+                                                brightness: root.darkMode ? -0.22 : -0.02
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            color: root.darkMode ? "#33202B3C" : "#18FFFFFF"
+                                        }
+
                                         Rectangle {
                                             id: imageFrame
                                             anchors.left: parent.left
@@ -1009,42 +1146,23 @@ ApplicationWindow {
                                             anchors.leftMargin: 12
                                             anchors.rightMargin: 12
                                             anchors.topMargin: 12
-                                            height: Math.round(parent.height * 0.58)
-                                            radius: 14
-                                            color: root.darkMode ? "#263247" : "#E8F3FF"
-                                            clip: true
-
-                                            Image {
-                                                id: atmosphereHeaderImage
-                                                anchors.fill: parent
-                                                source: headerImageUrl
-                                                fillMode: Image.PreserveAspectCrop
-                                                asynchronous: true
-                                                cache: true
-                                                smooth: true
-                                                visible: status === Image.Ready
-                                                opacity: root.darkMode ? 0.48 : 0.58
-                                                layer.enabled: true
-                                                layer.smooth: true
-                                                layer.effect: MultiEffect {
-                                                    blurEnabled: true
-                                                    blur: 0.82
-                                                    blurMax: 32
-                                                    saturation: 0.78
-                                                    brightness: root.darkMode ? -0.18 : -0.08
-                                                }
-                                            }
-
-                                            Rectangle {
-                                                anchors.fill: parent
-                                                color: root.darkMode ? "#66111722" : "#33FFFFFF"
+                                            height: Math.round(Math.max(104, (parent.width - 24) * 0.47))
+                                            radius: 8
+                                            color: "transparent"
+                                            clip: false
+                                            antialiasing: true
+                                            layer.enabled: true
+                                            layer.smooth: true
+                                            layer.effect: MultiEffect {
+                                                maskEnabled: true
+                                                maskSource: imageFrameRoundMask
                                             }
 
                                             Image {
                                                 id: squareHeaderImage
                                                 anchors.centerIn: parent
-                                                width: parent.width - 18
-                                                height: parent.height - 16
+                                                width: parent.width
+                                                height: Math.round(width * 0.47)
                                                 source: headerImageUrl
                                                 fillMode: Image.PreserveAspectFit
                                                 asynchronous: true
@@ -1061,6 +1179,16 @@ ApplicationWindow {
                                                 }
                                             }
 
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: parent.radius
+                                                color: "transparent"
+                                                border.width: 1
+                                                border.color: root.darkMode ? "#33202B3C" : "#40FFFFFF"
+                                                antialiasing: true
+                                                opacity: 0.72
+                                            }
+
                                             Text {
                                                 anchors.centerIn: parent
                                                 text: displayName.length > 0 ? displayName[0].toUpperCase() : "?"
@@ -1073,15 +1201,24 @@ ApplicationWindow {
                                         }
 
                                         Rectangle {
-                                            anchors.left: parent.left
-                                            anchors.right: parent.right
-                                            anchors.bottom: parent.bottom
-                                            height: parent.height * 0.58
+                                            id: imageFrameRoundMask
+                                            anchors.fill: imageFrame
+                                            radius: imageFrame.radius
+                                            color: "white"
+                                            visible: false
+                                            antialiasing: true
+                                            layer.enabled: true
+                                            layer.smooth: true
+                                        }
+
+                                        Rectangle {
+                                            anchors.fill: parent
                                             radius: parent.radius
                                             gradient: Gradient {
                                                 GradientStop { position: 0.0; color: root.darkMode ? "#00111722" : "#00FFFFFF" }
-                                                GradientStop { position: 0.48; color: root.darkMode ? "#99111722" : "#99172033" }
-                                                GradientStop { position: 1.0; color: root.darkMode ? "#F0111722" : "#E8172033" }
+                                                GradientStop { position: 0.46; color: root.darkMode ? "#00111722" : "#00FFFFFF" }
+                                                GradientStop { position: 0.74; color: root.darkMode ? "#3A111722" : "#38172033" }
+                                                GradientStop { position: 1.0; color: root.darkMode ? "#BC111722" : "#A8172033" }
                                             }
                                         }
 
@@ -1229,22 +1366,34 @@ ApplicationWindow {
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 16
+                            Layout.preferredHeight: 38
+                            spacing: 12
 
                             Rectangle {
-                                Layout.preferredWidth: 104
-                                Layout.preferredHeight: 38
-                                radius: 13
-                                color: detailBackArea.containsMouse ? (root.darkMode ? "#2A3448" : "#E5F2FF") : (root.darkMode ? "#222B3C" : "#EEF5FC")
-                                border.width: 1
-                                border.color: detailBackArea.containsMouse ? root.accentColor : (root.darkMode ? "#334155" : "#D8E4F2")
+                                Layout.preferredWidth: 142
+                                Layout.fillHeight: true
+                                radius: 14
+                                color: detailBackArea.containsMouse ? (root.darkMode ? "#263247" : "#E7F3FF") : "transparent"
+                                border.width: detailBackArea.containsMouse ? 1 : 0
+                                border.color: root.darkMode ? "#334155" : "#CFE5FA"
 
-                                Text {
+                                RowLayout {
                                     anchors.centerIn: parent
-                                    text: "返回游戏库"
-                                    color: detailBackArea.containsMouse ? root.accentColor : root.textColor
-                                    font.pixelSize: 13
-                                    font.bold: true
+                                    spacing: 8
+
+                                    Text {
+                                        text: "\uE72B"
+                                        color: root.accentColor
+                                        font.family: "Segoe MDL2 Assets"
+                                        font.pixelSize: 13
+                                    }
+
+                                    Text {
+                                        text: "返回游戏库"
+                                        color: detailBackArea.containsMouse ? root.accentColor : root.textColor
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                    }
                                 }
 
                                 MouseArea {
@@ -1256,65 +1405,232 @@ ApplicationWindow {
                                 }
                             }
 
-                            Rectangle {
-                                Layout.preferredWidth: 176
-                                Layout.preferredHeight: 82
-                                radius: 16
-                                color: root.darkMode ? "#263247" : "#E5F2FF"
-                                clip: true
+                            Text {
+                                text: "游戏详情"
+                                color: root.mutedTextColor
+                                font.pixelSize: 13
+                            }
 
-                                Image {
-                                    anchors.fill: parent
-                                    source: root.selectedGameValue("headerImageUrl", "")
-                                    fillMode: Image.PreserveAspectCrop
-                                    asynchronous: true
-                                    cache: true
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Rectangle {
+                            id: detailHero
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 188
+                            radius: 22
+                            color: root.darkMode ? "#202B3C" : "#EEF6FE"
+                            clip: true
+                            antialiasing: true
+                            layer.enabled: true
+                            layer.smooth: true
+                            layer.effect: MultiEffect {
+                                maskEnabled: true
+                                maskSource: detailHeroMask
+                            }
+
+                            Rectangle {
+                                id: detailHeroMask
+                                anchors.fill: parent
+                                radius: detailHero.radius
+                                color: "white"
+                                visible: false
+                                antialiasing: true
+                                layer.enabled: true
+                                layer.smooth: true
+                            }
+
+                            Image {
+                                anchors.fill: parent
+                                source: root.selectedGameValue("headerImageUrl", "")
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                                cache: true
+                                smooth: true
+                                opacity: root.darkMode ? 0.30 : 0.26
+                                scale: 1.08
+                                layer.enabled: true
+                                layer.smooth: true
+                                layer.effect: MultiEffect {
+                                    blurEnabled: true
+                                    blur: 0.74
+                                    blurMax: 28
+                                    saturation: 0.78
+                                    brightness: root.darkMode ? -0.18 : 0.06
                                 }
                             }
 
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 4
-
-                                Text {
-                                    text: root.selectedGameValue("displayName", "未知游戏")
-                                    color: root.textColor
-                                    font.pixelSize: 24
-                                    font.bold: true
-                                    elide: Text.ElideRight
-                                    Layout.fillWidth: true
+                            Rectangle {
+                                anchors.fill: parent
+                                gradient: Gradient {
+                                    GradientStop { position: 0.0; color: root.darkMode ? "#33172030" : "#22FFFFFF" }
+                                    GradientStop { position: 0.64; color: root.darkMode ? "#11172030" : "#00FFFFFF" }
+                                    GradientStop { position: 1.0; color: root.darkMode ? "#202B3C" : "#EEF6FE" }
                                 }
+                            }
 
-                                Text {
-                                    text: "AppID " + root.selectedGameValue("appId", "-") + " · " + root.selectedGameValue("processName", "未识别进程")
-                                    color: root.mutedTextColor
-                                    font.pixelSize: 13
-                                    elide: Text.ElideRight
-                                    Layout.fillWidth: true
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: detailHero.radius
+                                color: "transparent"
+                                border.width: 1
+                                border.color: root.darkMode ? "#334155" : "#DDEAF5"
+                                antialiasing: true
+                            }
+
+                            Rectangle {
+                                id: heroImagePanel
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 18
+                                width: Math.round(parent.width * 0.54)
+                                radius: 16
+                                color: root.darkMode ? "#1A111722" : "#18FFFFFF"
+                                clip: true
+
+                                Image {
+                                    anchors.centerIn: parent
+                                    width: parent.width - 20
+                                    height: Math.round(width * 0.47)
+                                    source: root.selectedGameValue("headerImageUrl", "")
+                                    fillMode: Image.PreserveAspectFit
+                                    asynchronous: true
+                                    cache: true
+                                    smooth: true
+                                    mipmap: true
                                 }
+                            }
 
-                                Text {
-                                    text: root.selectedGameValue("runningStatus", "等待进程监控")
-                                    color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#16A34A" : root.mutedTextColor
-                                    font.pixelSize: 13
-                                    elide: Text.ElideRight
-                                    Layout.fillWidth: true
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                anchors.leftMargin: 18
+                                anchors.topMargin: 18
+                                anchors.bottomMargin: 18
+                                anchors.right: heroImagePanel.left
+                                anchors.rightMargin: 18
+                                radius: 18
+                                color: root.darkMode ? "#99172030" : "#DDF7FBFF"
+                                border.width: 1
+                                border.color: root.darkMode ? "#334155" : "#DDEAF5"
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 18
+                                    spacing: 8
+
+                                    Text {
+                                        text: root.selectedGameValue("displayName", "未知游戏")
+                                        color: root.textColor
+                                        font.family: root.appFontFamily
+                                        font.pixelSize: 26
+                                        font.bold: true
+                                        maximumLineCount: 2
+                                        wrapMode: Text.WordWrap
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+
+                                    Text {
+                                        text: "AppID " + root.selectedGameValue("appId", "-")
+                                        color: root.mutedTextColor
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+
+                                    Text {
+                                        text: root.selectedGameValue("processName", "未识别进程")
+                                        color: root.mutedTextColor
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+
+                                    Item { Layout.fillHeight: true }
+
+                                    Rectangle {
+                                        Layout.preferredWidth: heroRunningText.implicitWidth + 22
+                                        Layout.preferredHeight: 28
+                                        radius: 14
+                                        color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#DCFCE7" : "#E8EEF7"
+
+                                        Text {
+                                            id: heroRunningText
+                                            anchors.centerIn: parent
+                                            text: root.runningBrief(root.selectedGameValue("runningStatus", "等待进程监控"))
+                                            color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#16A34A" : "#64748B"
+                                            font.pixelSize: 12
+                                            font.bold: true
+                                        }
+                                    }
                                 }
                             }
                         }
 
-                        TabBar {
+                        Rectangle {
                             Layout.fillWidth: true
-                            currentIndex: root.gameDetailTab
-                            onCurrentIndexChanged: {
-                                root.gameDetailTab = currentIndex
-                                root.refreshDetailSnapshots()
-                            }
+                            Layout.preferredHeight: 54
+                            radius: 18
+                            color: root.darkMode ? "#172030" : "#EEF5FC"
+                            border.width: 1
+                            border.color: root.darkMode ? "#2A3448" : "#DDEAF5"
 
-                            TabButton { text: "概览" }
-                            TabButton { text: "本地快照" }
-                            TabButton { text: "云端快照" }
-                            TabButton { text: "设置" }
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: 5
+                                spacing: 5
+
+                                Repeater {
+                                    model: [
+                                        { label: "概览", icon: "\uE80F" },
+                                        { label: "本地快照", icon: "\uE8B7" },
+                                        { label: "云端快照", icon: "\uE753" },
+                                        { label: "设置", icon: "\uE713" }
+                                    ]
+
+                                    delegate: Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        radius: 14
+                                        color: root.gameDetailTab === index
+                                               ? (root.darkMode ? "#263247" : "#FFFFFF")
+                                               : (tabMouseArea.containsMouse ? (root.darkMode ? "#202B3C" : "#F7FBFF") : "transparent")
+                                        border.width: root.gameDetailTab === index ? 1 : 0
+                                        border.color: root.darkMode ? "#334155" : "#DDEAF5"
+
+                                        RowLayout {
+                                            anchors.centerIn: parent
+                                            spacing: 8
+
+                                            Text {
+                                                text: modelData.icon
+                                                color: root.gameDetailTab === index ? root.accentColor : root.mutedTextColor
+                                                font.family: "Segoe MDL2 Assets"
+                                                font.pixelSize: 13
+                                            }
+
+                                            Text {
+                                                text: modelData.label
+                                                color: root.gameDetailTab === index ? root.accentColor : root.mutedTextColor
+                                                font.family: root.appFontFamily
+                                                font.pixelSize: 14
+                                                font.bold: root.gameDetailTab === index
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: tabMouseArea
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.switchDetailTab(index)
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         StackLayout {
@@ -1324,6 +1640,7 @@ ApplicationWindow {
 
                             ScrollView {
                                 clip: true
+                                ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
                                 ColumnLayout {
                                     width: parent.width
@@ -1332,60 +1649,143 @@ ApplicationWindow {
                                     GridLayout {
                                         Layout.fillWidth: true
                                         columns: 2
-                                        rowSpacing: 12
-                                        columnSpacing: 12
+                                        rowSpacing: 14
+                                        columnSpacing: 14
 
                                         Rectangle {
                                             Layout.fillWidth: true
-                                            Layout.preferredHeight: 98
-                                            radius: 16
-                                            color: root.darkMode ? "#172030" : "#F7F9FC"
+                                            Layout.preferredHeight: 132
+                                            radius: 18
+                                            color: root.cardColor
                                             border.width: 1
-                                            border.color: root.darkMode ? "#2A3448" : "#E8EDF5"
+                                            border.color: root.darkMode ? "#313C50" : "#E6EBF2"
+                                            layer.enabled: true
+                                            layer.effect: MultiEffect {
+                                                shadowEnabled: true
+                                                shadowOpacity: root.darkMode ? 0.20 : 0.08
+                                                shadowBlur: 0.50
+                                                shadowVerticalOffset: 6
+                                                shadowColor: root.darkMode ? "#66000000" : "#220B1B33"
+                                            }
 
-                                            ColumnLayout {
+                                            RowLayout {
                                                 anchors.fill: parent
-                                                anchors.margins: 14
-                                                spacing: 6
+                                                anchors.margins: 18
+                                                spacing: 16
 
-                                                Text { text: "存档状态"; color: root.textColor; font.pixelSize: 15; font.bold: true }
-                                                Text {
-                                                    text: root.savePathText(root.selectedGameValue("savePathStatus", "未识别"), root.selectedGameValue("savePathAvailability", "未知"), root.selectedGameValue("savePath", ""))
-                                                    color: root.mutedTextColor
-                                                    font.pixelSize: 13
-                                                    elide: Text.ElideRight
+                                                Rectangle {
+                                                    Layout.preferredWidth: 58
+                                                    Layout.preferredHeight: 58
+                                                    radius: 18
+                                                    color: root.selectedGameValue("savePathCanSync", false) ? (root.darkMode ? "#243F33" : "#DCFCE7") : (root.darkMode ? "#4A341D" : "#FEF3C7")
+
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        text: "\uE8B7"
+                                                        color: root.selectedGameValue("savePathCanSync", false) ? "#16A34A" : "#D97706"
+                                                        font.family: "Segoe MDL2 Assets"
+                                                        font.pixelSize: 25
+                                                    }
+                                                }
+
+                                                ColumnLayout {
                                                     Layout.fillWidth: true
+                                                    spacing: 5
+
+                                                    Text {
+                                                        text: "存档状态"
+                                                        color: root.mutedTextColor
+                                                        font.pixelSize: 12
+                                                        font.bold: true
+                                                    }
+
+                                                    Text {
+                                                        text: root.selectedGameValue("savePathCanSync", false) ? "存档可同步" : root.saveBadgeText(false, root.selectedGameValue("savePathStatus", "等待识别"))
+                                                        color: root.selectedGameValue("savePathCanSync", false) ? "#16A34A" : "#D97706"
+                                                        font.pixelSize: 22
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                        Layout.fillWidth: true
+                                                    }
+
+                                                    Text {
+                                                        text: root.savePathText(root.selectedGameValue("savePathStatus", "未识别"), root.selectedGameValue("savePathAvailability", "未知"), root.selectedGameValue("savePath", ""))
+                                                        color: root.mutedTextColor
+                                                        font.pixelSize: 13
+                                                        maximumLineCount: 2
+                                                        wrapMode: Text.WordWrap
+                                                        elide: Text.ElideRight
+                                                        Layout.fillWidth: true
+                                                    }
                                                 }
                                             }
                                         }
 
                                         Rectangle {
                                             Layout.fillWidth: true
-                                            Layout.preferredHeight: 98
-                                            radius: 16
-                                            color: root.darkMode ? "#172030" : "#F7F9FC"
+                                            Layout.preferredHeight: 132
+                                            radius: 18
+                                            color: root.cardColor
                                             border.width: 1
-                                            border.color: root.darkMode ? "#2A3448" : "#E8EDF5"
+                                            border.color: root.darkMode ? "#313C50" : "#E6EBF2"
+                                            layer.enabled: true
+                                            layer.effect: MultiEffect {
+                                                shadowEnabled: true
+                                                shadowOpacity: root.darkMode ? 0.20 : 0.08
+                                                shadowBlur: 0.50
+                                                shadowVerticalOffset: 6
+                                                shadowColor: root.darkMode ? "#66000000" : "#220B1B33"
+                                            }
 
-                                            ColumnLayout {
+                                            RowLayout {
                                                 anchors.fill: parent
-                                                anchors.margins: 14
-                                                spacing: 6
+                                                anchors.margins: 18
+                                                spacing: 16
 
-                                                Text { text: "快照状态"; color: root.textColor; font.pixelSize: 15; font.bold: true }
-                                                Text {
-                                                    text: "本地 " + root.selectedGameValue("snapshotCount", 0) + " 个 · 云端 " + root.selectedGameValue("cloudSnapshotCount", 0) + " 个"
-                                                    color: root.mutedTextColor
-                                                    font.pixelSize: 13
-                                                    elide: Text.ElideRight
-                                                    Layout.fillWidth: true
+                                                Rectangle {
+                                                    Layout.preferredWidth: 58
+                                                    Layout.preferredHeight: 58
+                                                    radius: 18
+                                                    color: root.selectedGameValue("snapshotCount", 0) > 0 ? (root.darkMode ? "#16384A" : "#E0F2FE") : (root.darkMode ? "#263244" : "#E8EEF7")
+
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        text: "\uE823"
+                                                        color: root.selectedGameValue("snapshotCount", 0) > 0 ? "#0284C7" : "#64748B"
+                                                        font.family: "Segoe MDL2 Assets"
+                                                        font.pixelSize: 25
+                                                    }
                                                 }
-                                                Text {
-                                                    text: root.selectedGameValue("snapshotStatus", "未检查本地快照")
-                                                    color: root.mutedTextColor
-                                                    font.pixelSize: 13
-                                                    elide: Text.ElideRight
+
+                                                ColumnLayout {
                                                     Layout.fillWidth: true
+                                                    spacing: 5
+
+                                                    Text {
+                                                        text: "快照状态"
+                                                        color: root.mutedTextColor
+                                                        font.pixelSize: 12
+                                                        font.bold: true
+                                                    }
+
+                                                    Text {
+                                                        text: root.selectedGameValue("snapshotCount", 0) > 0 ? "快照可用" : "尚未创建"
+                                                        color: root.selectedGameValue("snapshotCount", 0) > 0 ? "#0284C7" : "#64748B"
+                                                        font.pixelSize: 22
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                        Layout.fillWidth: true
+                                                    }
+
+                                                    Text {
+                                                        text: "本地 " + root.selectedGameValue("snapshotCount", 0) + " 个 · 云端 " + root.selectedGameValue("cloudSnapshotCount", 0) + " 个 · " + root.selectedGameValue("snapshotStatus", "未检查本地快照")
+                                                        color: root.mutedTextColor
+                                                        font.pixelSize: 13
+                                                        maximumLineCount: 2
+                                                        wrapMode: Text.WordWrap
+                                                        elide: Text.ElideRight
+                                                        Layout.fillWidth: true
+                                                    }
                                                 }
                                             }
                                         }
@@ -1393,34 +1793,157 @@ ApplicationWindow {
 
                                     RowLayout {
                                         Layout.fillWidth: true
+                                        Layout.preferredHeight: 46
                                         spacing: 10
 
-                                        Button {
-                                            Layout.preferredWidth: 112
-                                            text: "检查快照"
-                                            enabled: root.selectedGameValue("savePathCanSync", false)
-                                            onClicked: steamManager.analyzeSnapshotForGame(root.selectedGameAppId)
-                                        }
-
-                                        Button {
-                                            Layout.preferredWidth: 112
-                                            text: "创建快照"
-                                            enabled: root.selectedGameValue("savePathCanSync", false)
-                                            onClicked: steamManager.createSnapshotForGame(root.selectedGameAppId)
-                                        }
-
-                                        Button {
+                                        Rectangle {
                                             Layout.preferredWidth: 132
-                                            text: "上传全部快照"
-                                            enabled: root.selectedGameValue("snapshotCount", 0) > 0
-                                            onClicked: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
+                                            Layout.fillHeight: true
+                                            radius: 14
+                                            opacity: root.selectedGameValue("savePathCanSync", false) ? 1.0 : 0.45
+                                            color: root.actionButtonBackground("primary", createSnapshotArea.containsMouse && root.selectedGameValue("savePathCanSync", false))
+                                            border.width: 0
+
+                                            RowLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 7
+
+                                                Text {
+                                                    text: "\uE710"
+                                                    color: root.actionButtonTextColor("primary", createSnapshotArea.containsMouse)
+                                                    font.family: "Segoe MDL2 Assets"
+                                                    font.pixelSize: 13
+                                                }
+
+                                                Text {
+                                                    text: "创建快照"
+                                                    color: root.actionButtonTextColor("primary", createSnapshotArea.containsMouse)
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: createSnapshotArea
+                                                anchors.fill: parent
+                                                enabled: root.selectedGameValue("savePathCanSync", false)
+                                                hoverEnabled: true
+                                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                onClicked: steamManager.createSnapshotForGame(root.selectedGameAppId)
+                                            }
                                         }
 
-                                        Button {
-                                            Layout.preferredWidth: 132
-                                            text: "下载全部快照"
-                                            enabled: steamManager.hasDownloadableSnapshot(root.selectedGameAppId)
-                                            onClicked: steamManager.downloadAllSnapshotsForGame(root.selectedGameAppId)
+                                        Rectangle {
+                                            Layout.preferredWidth: 148
+                                            Layout.fillHeight: true
+                                            radius: 14
+                                            opacity: root.selectedGameValue("snapshotCount", 0) > 0 ? 1.0 : 0.45
+                                            color: root.actionButtonBackground("primary", uploadAllArea.containsMouse && root.selectedGameValue("snapshotCount", 0) > 0)
+                                            border.width: 0
+
+                                            RowLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 7
+
+                                                Text {
+                                                    text: "\uE898"
+                                                    color: root.actionButtonTextColor("primary", uploadAllArea.containsMouse)
+                                                    font.family: "Segoe MDL2 Assets"
+                                                    font.pixelSize: 13
+                                                }
+
+                                                Text {
+                                                    text: "上传全部快照"
+                                                    color: root.actionButtonTextColor("primary", uploadAllArea.containsMouse)
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: uploadAllArea
+                                                anchors.fill: parent
+                                                enabled: root.selectedGameValue("snapshotCount", 0) > 0
+                                                hoverEnabled: true
+                                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                onClicked: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.preferredWidth: 122
+                                            Layout.fillHeight: true
+                                            radius: 14
+                                            opacity: root.selectedGameValue("savePathCanSync", false) ? 1.0 : 0.45
+                                            color: root.actionButtonBackground("ghost", checkSnapshotArea.containsMouse && root.selectedGameValue("savePathCanSync", false))
+                                            border.width: 1
+                                            border.color: root.actionButtonBorder("ghost", checkSnapshotArea.containsMouse && root.selectedGameValue("savePathCanSync", false))
+
+                                            RowLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 7
+
+                                                Text {
+                                                    text: "\uE721"
+                                                    color: root.actionButtonTextColor("ghost", checkSnapshotArea.containsMouse)
+                                                    font.family: "Segoe MDL2 Assets"
+                                                    font.pixelSize: 13
+                                                }
+
+                                                Text {
+                                                    text: "检查快照"
+                                                    color: root.actionButtonTextColor("ghost", checkSnapshotArea.containsMouse)
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: checkSnapshotArea
+                                                anchors.fill: parent
+                                                enabled: root.selectedGameValue("savePathCanSync", false)
+                                                hoverEnabled: true
+                                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                onClicked: steamManager.analyzeSnapshotForGame(root.selectedGameAppId)
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.preferredWidth: 148
+                                            Layout.fillHeight: true
+                                            radius: 14
+                                            opacity: steamManager.hasDownloadableSnapshot(root.selectedGameAppId) ? 1.0 : 0.45
+                                            color: root.actionButtonBackground("ghost", downloadAllArea.containsMouse && steamManager.hasDownloadableSnapshot(root.selectedGameAppId))
+                                            border.width: 1
+                                            border.color: root.actionButtonBorder("ghost", downloadAllArea.containsMouse && steamManager.hasDownloadableSnapshot(root.selectedGameAppId))
+
+                                            RowLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 7
+
+                                                Text {
+                                                    text: "\uE896"
+                                                    color: root.actionButtonTextColor("ghost", downloadAllArea.containsMouse)
+                                                    font.family: "Segoe MDL2 Assets"
+                                                    font.pixelSize: 13
+                                                }
+
+                                                Text {
+                                                    text: "下载全部快照"
+                                                    color: root.actionButtonTextColor("ghost", downloadAllArea.containsMouse)
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: downloadAllArea
+                                                anchors.fill: parent
+                                                enabled: steamManager.hasDownloadableSnapshot(root.selectedGameAppId)
+                                                hoverEnabled: true
+                                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                onClicked: steamManager.downloadAllSnapshotsForGame(root.selectedGameAppId)
+                                            }
                                         }
 
                                         Item { Layout.fillWidth: true }
@@ -1428,252 +1951,114 @@ ApplicationWindow {
 
                                     Rectangle {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 124
-                                        radius: 16
-                                        color: root.darkMode ? "#172030" : "#F7F9FC"
+                                        Layout.preferredHeight: 178
+                                        radius: 18
+                                        color: root.cardColor
                                         border.width: 1
-                                        border.color: root.darkMode ? "#2A3448" : "#E8EDF5"
+                                        border.color: root.darkMode ? "#313C50" : "#E6EBF2"
 
                                         ColumnLayout {
                                             anchors.fill: parent
-                                            anchors.margins: 14
-                                            spacing: 8
+                                            anchors.margins: 18
+                                            spacing: 12
 
-                                            Text { text: "最新信息"; color: root.textColor; font.pixelSize: 15; font.bold: true }
                                             Text {
-                                                text: "本地最新快照 " + root.selectedGameValue("latestSnapshotFileName", "暂无")
-                                                color: root.mutedTextColor
-                                                font.pixelSize: 13
-                                                elide: Text.ElideRight
-                                                Layout.fillWidth: true
+                                                text: "最新动态"
+                                                color: root.textColor
+                                                font.pixelSize: 16
+                                                font.bold: true
                                             }
-                                            Text {
-                                                text: "云端最新快照 " + root.selectedGameValue("latestCloudSnapshotFileName", "暂无")
-                                                color: root.mutedTextColor
-                                                font.pixelSize: 13
-                                                elide: Text.ElideRight
-                                                Layout.fillWidth: true
-                                            }
-                                            Text {
-                                                text: root.selectedGameValue("snapshotDetail", "暂无本地快照详情")
-                                                color: root.mutedTextColor
-                                                font.pixelSize: 13
-                                                elide: Text.ElideRight
-                                                Layout.fillWidth: true
-                                            }
-                                        }
-                                    }
-                                }
-                            }
 
-                            ColumnLayout {
-                                spacing: 10
+                                            Repeater {
+                                                model: [
+                                                    { title: "本地最新快照", detail: root.selectedGameValue("latestSnapshotFileName", "暂无本地快照"), color: root.selectedGameValue("snapshotCount", 0) > 0 ? "#4F46E5" : "#94A3B8" },
+                                                    { title: "云端最新快照", detail: root.selectedGameValue("latestCloudSnapshotFileName", "暂无云端快照"), color: root.selectedGameValue("cloudSnapshotCount", 0) > 0 ? "#0284C7" : "#94A3B8" },
+                                                    { title: "处理状态", detail: root.selectedGameValue("snapshotDetail", "等待用户设置快照目录并执行快照预处理检查"), color: root.selectedGameValue("savePathCanSync", false) ? "#16A34A" : "#D97706" }
+                                                ]
 
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 10
-
-                                    Button {
-                                        Layout.preferredWidth: 132
-                                        text: "刷新本地列表"
-                                        onClicked: {
-                                            steamManager.refreshLocalSnapshotsForGame(root.selectedGameAppId)
-                                            root.refreshDetailSnapshots()
-                                        }
-                                    }
-
-                                    Button {
-                                        Layout.preferredWidth: 132
-                                        text: "上传全部快照"
-                                        enabled: root.detailLocalSnapshots.length > 0
-                                        onClicked: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
-                                    }
-
-                                    Button {
-                                        Layout.preferredWidth: 132
-                                        text: "打开快照目录"
-                                        onClicked: steamManager.openSnapshotDirectoryForGame(root.selectedGameAppId)
-                                    }
-
-                                    Button {
-                                        Layout.preferredWidth: 132
-                                        text: "删除存档快照"
-                                        enabled: root.detailLocalSnapshots.length > 0
-                                        onClicked: {
-                                            root.pendingDeleteSnapshotAppId = root.selectedGameAppId
-                                            root.pendingDeleteSnapshotGameName = root.selectedGameValue("displayName", "该游戏")
-                                            deleteLocalSnapshotsDialog.open()
-                                        }
-                                    }
-
-                                    Item { Layout.fillWidth: true }
-                                }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    radius: 16
-                                    color: root.darkMode ? "#172030" : "#F7F9FC"
-                                    border.width: 1
-                                    border.color: root.darkMode ? "#2A3448" : "#E8EDF5"
-                                    clip: true
-
-                                    ListView {
-                                        anchors.fill: parent
-                                        anchors.margins: 12
-                                        spacing: 8
-                                        clip: true
-                                        model: root.detailLocalSnapshots
-
-                                        delegate: Rectangle {
-                                            width: ListView.view.width
-                                            height: 82
-                                            radius: 14
-                                            color: root.cardColor
-                                            border.width: 1
-                                            border.color: root.darkMode ? "#313C50" : "#E6EBF2"
-
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 12
-                                                spacing: 10
-
-                                                ColumnLayout {
+                                                delegate: RowLayout {
                                                     Layout.fillWidth: true
-                                                    spacing: 4
+                                                    spacing: 10
+
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 9
+                                                        Layout.preferredHeight: 9
+                                                        radius: 5
+                                                        color: modelData.color
+                                                    }
 
                                                     Text {
-                                                        text: modelData.fileName || "未知快照"
+                                                        Layout.preferredWidth: 116
+                                                        text: modelData.title
                                                         color: root.textColor
-                                                        font.pixelSize: 14
+                                                        font.pixelSize: 13
                                                         font.bold: true
                                                         elide: Text.ElideRight
-                                                        Layout.fillWidth: true
                                                     }
 
                                                     Text {
-                                                        text: (modelData.zipPath || "") + " · " + (modelData.uploadState || "not_uploaded")
-                                                        color: root.mutedTextColor
-                                                        font.pixelSize: 12
-                                                        elide: Text.ElideRight
                                                         Layout.fillWidth: true
+                                                        text: modelData.detail
+                                                        color: root.mutedTextColor
+                                                        font.pixelSize: 13
+                                                        elide: Text.ElideRight
                                                     }
-                                                }
-
-                                                Button {
-                                                    Layout.preferredWidth: 96
-                                                    text: "可选上传"
-                                                    onClicked: steamManager.uploadSelectedSnapshotForGame(root.selectedGameAppId, modelData.zipPath || modelData.fileName || "")
                                                 }
                                             }
                                         }
                                     }
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        visible: root.detailLocalSnapshots.length === 0
-                                        text: "暂无本地存档快照"
-                                        color: root.mutedTextColor
-                                        font.pixelSize: 15
-                                    }
                                 }
                             }
 
-                            ColumnLayout {
-                                spacing: 10
+                            SnapshotList {
+                                mode: "local"
+                                snapshots: root.detailLocalSnapshots
+                                localSnapshotCount: root.detailLocalSnapshots.length
+                                savePathCanSync: root.selectedGameValue("savePathCanSync", false)
+                                darkMode: root.darkMode
+                                cardColor: root.cardColor
+                                textColor: root.textColor
+                                mutedTextColor: root.mutedTextColor
+                                accentColor: root.accentColor
 
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 10
-
-                                    Button {
-                                        Layout.preferredWidth: 132
-                                        text: "刷新云端快照"
-                                        onClicked: steamManager.refreshCloudSnapshotsForGame(root.selectedGameAppId)
-                                    }
-
-                                    Button {
-                                        Layout.preferredWidth: 132
-                                        text: "下载全部快照"
-                                        enabled: root.detailCloudSnapshots.length > 0
-                                        onClicked: steamManager.downloadAllSnapshotsForGame(root.selectedGameAppId)
-                                    }
-
-                                    Item { Layout.fillWidth: true }
+                                onRefreshRequested: {
+                                    steamManager.refreshLocalSnapshotsForGame(root.selectedGameAppId)
+                                    root.refreshDetailSnapshots()
                                 }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    radius: 16
-                                    color: root.darkMode ? "#172030" : "#F7F9FC"
-                                    border.width: 1
-                                    border.color: root.darkMode ? "#2A3448" : "#E8EDF5"
-                                    clip: true
-
-                                    ListView {
-                                        anchors.fill: parent
-                                        anchors.margins: 12
-                                        spacing: 8
-                                        clip: true
-                                        model: root.detailCloudSnapshots
-
-                                        delegate: Rectangle {
-                                            width: ListView.view.width
-                                            height: 82
-                                            radius: 14
-                                            color: root.cardColor
-                                            border.width: 1
-                                            border.color: root.darkMode ? "#313C50" : "#E6EBF2"
-
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 12
-                                                spacing: 10
-
-                                                ColumnLayout {
-                                                    Layout.fillWidth: true
-                                                    spacing: 4
-
-                                                    Text {
-                                                        text: modelData.fileName || "未知快照"
-                                                        color: root.textColor
-                                                        font.pixelSize: 14
-                                                        font.bold: true
-                                                        elide: Text.ElideRight
-                                                        Layout.fillWidth: true
-                                                    }
-
-                                                    Text {
-                                                        text: modelData.remotePath || ""
-                                                        color: root.mutedTextColor
-                                                        font.pixelSize: 12
-                                                        elide: Text.ElideRight
-                                                        Layout.fillWidth: true
-                                                    }
-                                                }
-
-                                                Button {
-                                                    Layout.preferredWidth: 96
-                                                    text: "可选下载"
-                                                    onClicked: steamManager.downloadSelectedSnapshotForGame(root.selectedGameAppId, modelData.fileName || modelData.remotePath || "")
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        visible: root.detailCloudSnapshots.length === 0
-                                        text: "暂无云端存档快照"
-                                        color: root.mutedTextColor
-                                        font.pixelSize: 15
-                                    }
+                                onUploadAllRequested: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
+                                onOpenDirectoryRequested: steamManager.openSnapshotDirectoryForGame(root.selectedGameAppId)
+                                onDeleteRequested: {
+                                    root.pendingDeleteSnapshotAppId = root.selectedGameAppId
+                                    root.pendingDeleteSnapshotGameName = root.selectedGameValue("displayName", "该游戏")
+                                    deleteLocalSnapshotsDialog.open()
+                                }
+                                onCreateSnapshotRequested: steamManager.createSnapshotForGame(root.selectedGameAppId)
+                                onUploadSelected: function(snapshotPath) {
+                                    steamManager.uploadSelectedSnapshotForGame(root.selectedGameAppId, snapshotPath)
                                 }
                             }
 
+                            SnapshotList {
+                                mode: "cloud"
+                                snapshots: root.detailCloudSnapshots
+                                localSnapshotCount: root.detailLocalSnapshots.length
+                                savePathCanSync: root.selectedGameValue("savePathCanSync", false)
+                                darkMode: root.darkMode
+                                cardColor: root.cardColor
+                                textColor: root.textColor
+                                mutedTextColor: root.mutedTextColor
+                                accentColor: root.accentColor
+
+                                onRefreshRequested: steamManager.refreshCloudSnapshotsForGame(root.selectedGameAppId)
+                                onDownloadAllRequested: steamManager.downloadAllSnapshotsForGame(root.selectedGameAppId)
+                                onUploadAllRequested: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
+                                onDownloadSelected: function(snapshotName) {
+                                    steamManager.downloadSelectedSnapshotForGame(root.selectedGameAppId, snapshotName)
+                                }
+                            }
                             ScrollView {
                                 clip: true
+                                ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
                                 ColumnLayout {
                                     width: parent.width
@@ -1703,28 +2088,118 @@ ApplicationWindow {
 
                                             RowLayout {
                                                 Layout.fillWidth: true
+                                                Layout.preferredHeight: 44
                                                 spacing: 10
 
-                                                Button {
-                                                    Layout.preferredWidth: 132
-                                                    text: "选择存档目录"
-                                                    onClicked: {
-                                                        root.pendingManualAppId = root.selectedGameAppId
-                                                        savePathDialog.open()
+                                                Rectangle {
+                                                    Layout.preferredWidth: 138
+                                                    Layout.fillHeight: true
+                                                    radius: 14
+                                                    color: root.actionButtonBackground("primary", chooseSavePathArea.containsMouse)
+
+                                                    RowLayout {
+                                                        anchors.centerIn: parent
+                                                        spacing: 7
+
+                                                        Text {
+                                                            text: "\uE8B7"
+                                                            color: "white"
+                                                            font.family: "Segoe MDL2 Assets"
+                                                            font.pixelSize: 13
+                                                        }
+
+                                                        Text {
+                                                            text: "选择存档目录"
+                                                            color: "white"
+                                                            font.pixelSize: 13
+                                                            font.bold: true
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        id: chooseSavePathArea
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: {
+                                                            root.pendingManualAppId = root.selectedGameAppId
+                                                            savePathDialog.open()
+                                                        }
                                                     }
                                                 }
 
-                                                Button {
-                                                    Layout.preferredWidth: 132
-                                                    text: "打开存档目录"
-                                                    enabled: root.selectedGameValue("savePath", "").length > 0
-                                                    onClicked: steamManager.openSavePathForGame(root.selectedGameAppId)
+                                                Rectangle {
+                                                    Layout.preferredWidth: 138
+                                                    Layout.fillHeight: true
+                                                    radius: 14
+                                                    opacity: root.selectedGameValue("savePath", "").length > 0 ? 1.0 : 0.45
+                                                    color: root.actionButtonBackground("ghost", openSavePathArea.containsMouse && root.selectedGameValue("savePath", "").length > 0)
+                                                    border.width: 1
+                                                    border.color: root.actionButtonBorder("ghost", openSavePathArea.containsMouse && root.selectedGameValue("savePath", "").length > 0)
+
+                                                    RowLayout {
+                                                        anchors.centerIn: parent
+                                                        spacing: 7
+
+                                                        Text {
+                                                            text: "\uE8A5"
+                                                            color: root.actionButtonTextColor("ghost", openSavePathArea.containsMouse)
+                                                            font.family: "Segoe MDL2 Assets"
+                                                            font.pixelSize: 13
+                                                        }
+
+                                                        Text {
+                                                            text: "打开存档目录"
+                                                            color: root.actionButtonTextColor("ghost", openSavePathArea.containsMouse)
+                                                            font.pixelSize: 13
+                                                            font.bold: true
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        id: openSavePathArea
+                                                        anchors.fill: parent
+                                                        enabled: root.selectedGameValue("savePath", "").length > 0
+                                                        hoverEnabled: true
+                                                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                        onClicked: steamManager.openSavePathForGame(root.selectedGameAppId)
+                                                    }
                                                 }
 
-                                                Button {
-                                                    Layout.preferredWidth: 132
-                                                    text: "打开快照目录"
-                                                    onClicked: steamManager.openSnapshotDirectoryForGame(root.selectedGameAppId)
+                                                Rectangle {
+                                                    Layout.preferredWidth: 138
+                                                    Layout.fillHeight: true
+                                                    radius: 14
+                                                    color: root.actionButtonBackground("ghost", openSettingsSnapshotDirArea.containsMouse)
+                                                    border.width: 1
+                                                    border.color: root.actionButtonBorder("ghost", openSettingsSnapshotDirArea.containsMouse)
+
+                                                    RowLayout {
+                                                        anchors.centerIn: parent
+                                                        spacing: 7
+
+                                                        Text {
+                                                            text: "\uE8B7"
+                                                            color: root.actionButtonTextColor("ghost", openSettingsSnapshotDirArea.containsMouse)
+                                                            font.family: "Segoe MDL2 Assets"
+                                                            font.pixelSize: 13
+                                                        }
+
+                                                        Text {
+                                                            text: "打开快照目录"
+                                                            color: root.actionButtonTextColor("ghost", openSettingsSnapshotDirArea.containsMouse)
+                                                            font.pixelSize: 13
+                                                            font.bold: true
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        id: openSettingsSnapshotDirArea
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: steamManager.openSnapshotDirectoryForGame(root.selectedGameAppId)
+                                                    }
                                                 }
 
                                                 Item { Layout.fillWidth: true }
