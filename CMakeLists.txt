@@ -70,8 +70,16 @@ qt_add_qml_module(GameSaveCloudQt
     QML_FILES
         qml/Main.qml
         qml/components/ActionButton.qml
+        qml/components/AppTitleBar.qml
+        qml/components/CloudSettingsPage.qml
+        qml/components/DeleteLocalSnapshotsDialog.qml
         qml/components/EmptyState.qml
+        qml/components/FramelessResizeHandles.qml
+        qml/components/LogPage.qml
+        qml/components/ModernScrollBar.qml
         qml/components/SnapshotList.qml
+        qml/components/SnapshotListDialog.qml
+        qml/components/ThemeToggle.qml
 )
 
 target_include_directories(GameSaveCloudQt

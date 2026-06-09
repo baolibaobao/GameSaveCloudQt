@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QObject>
 #include <QHash>
 #include <QJsonObject>
@@ -82,6 +83,7 @@ public:
     Q_INVOKABLE bool refreshLocalSnapshotsForGame(const QString &appId);
     Q_INVOKABLE void refreshCloudManifestFromRemote();
     Q_INVOKABLE void refreshCloudSnapshotsForGame(const QString &appId);
+    Q_INVOKABLE void refreshCloudSnapshotsForGameQuietly(const QString &appId);
     Q_INVOKABLE QVariantList snapshotsForGame(const QString &appId) const;
     Q_INVOKABLE QVariantList cloudSnapshotsForGame(const QString &appId) const;
     Q_INVOKABLE void clearVisibleLogs();
@@ -173,6 +175,7 @@ private:
         const QVariantList &records,
         const QString &status,
         const QString &detail);
+    QString cloudRootPath() const;
     QString cloudRootManifestPath() const;
     QString defaultStorageRootPath() const;
     QString storageRootFromSnapshotRoot(const QString &snapshotRootPath) const;
@@ -210,6 +213,8 @@ private:
     void startQuarkCookieHealthCheck();
     QString quarkCookieHealthCheckPath() const;
     bool isQuarkAuthFailureMessage(const QString &message) const;
+    void refreshCloudSnapshotsForGameInternal(const QString &appId, bool quiet);
+    bool shouldLogAutomaticCloudRefresh(const QString &appId);
 
     QString m_steamPath;
     QVariantList m_installedGames;
@@ -238,10 +243,14 @@ private:
     QHash<QString, int> m_pendingSnapshotDownloadSuccessByAppId;
     QHash<QString, int> m_pendingSnapshotDownloadFailureByAppId;
     QHash<QString, QVariantList> m_cloudSnapshotRecordsByAppId;
+    QHash<QString, QString> m_cloudDirectoryByAppId;
+    QHash<QString, bool> m_pendingCloudSnapshotRefreshQuietByAppId;
+    QHash<QString, QDateTime> m_lastAutomaticCloudRefreshLogByAppId;
     GameIdentityResolver m_gameIdentityResolver;
     ManualGameManager m_manualGameManager;
     PCGamingWikiGameSearchClient m_pcGamingWikiSearchClient;
     QHash<QString, GameInfo> m_pendingManualGames;
     bool m_hasLoggedProcessMonitorIdle = false;
     bool m_cloudManifestLoaded = false;
+    bool m_cloudManifestRefreshInFlight = false;
 };

@@ -70,18 +70,27 @@ void SteamMetadataClient::startRequest(const QString &appId)
         m_inFlight.remove(appId);
 
         const QNetworkReply::NetworkError error = reply->error();
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString errorText = reply->errorString();
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
 
         if (error != QNetworkReply::NoError) {
-            emit metadataFailed(appId, QStringLiteral("Steam appdetails 请求失败"));
+            emit metadataFailed(appId, QStringLiteral("Steam appdetails 请求失败：HTTP %1，%2")
+                                           .arg(httpStatus)
+                                           .arg(errorText));
             startNextRequests();
             return;
         }
 
         const QVariantMap metadata = parseAppDetails(appId, payload);
         if (metadata.isEmpty()) {
-            emit metadataFailed(appId, QStringLiteral("Steam appdetails 未返回可用资料"));
+            QString payloadPreview = QString::fromUtf8(payload.left(200));
+            payloadPreview.replace(QLatin1Char('\r'), QLatin1Char(' '));
+            payloadPreview.replace(QLatin1Char('\n'), QLatin1Char(' '));
+            emit metadataFailed(appId, QStringLiteral("Steam appdetails 未返回可用资料：HTTP %1，返回摘要：%2")
+                                           .arg(httpStatus)
+                                           .arg(payloadPreview));
             startNextRequests();
             return;
         }

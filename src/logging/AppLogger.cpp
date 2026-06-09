@@ -5,9 +5,11 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QStringConverter>
+#include <QStringList>
 
 #include "storage/AppSettings.h"
 
@@ -171,6 +173,8 @@ QString AppLogger::levelName(const QString &level) const
 void AppLogger::write(const QString &level, const QString &message)
 {
     const QDateTime now = QDateTime::currentDateTime();
+    cleanupOldLogs(now);
+
     const QString cleanMessage = message.trimmed().isEmpty()
                                      ? QStringLiteral("无详细内容")
                                      : message.trimmed();
@@ -197,6 +201,78 @@ void AppLogger::write(const QString &level, const QString &message)
      */
     appendLineToFile(currentLogFilePath(), line);
     appendLineToFile(dailyLogFilePath(now), line);
+}
+
+void AppLogger::cleanupOldLogs(const QDateTime &timestamp)
+{
+    const QDate today = timestamp.toLocalTime().date();
+    if (m_lastCleanupDate == today) {
+        return;
+    }
+    m_lastCleanupDate = today;
+
+    QDir dir(m_logDirectory);
+    if (!dir.exists()) {
+        return;
+    }
+
+    const QDate cutoffDate = today.addDays(-2);
+    const QFileInfoList dailyFiles = dir.entryInfoList(
+        {QStringLiteral("game-save-operations_*.log")},
+        QDir::Files | QDir::NoSymLinks);
+
+    const QRegularExpression datePattern(QStringLiteral(R"(game-save-operations_(\d{4}-\d{2}-\d{2})\.log)"));
+    for (const QFileInfo &fileInfo : dailyFiles) {
+        const QRegularExpressionMatch match = datePattern.match(fileInfo.fileName());
+        if (!match.hasMatch()) {
+            continue;
+        }
+
+        const QDate fileDate = QDate::fromString(match.captured(1), QStringLiteral("yyyy-MM-dd"));
+        if (fileDate.isValid() && fileDate < cutoffDate) {
+            QFile::remove(fileInfo.absoluteFilePath());
+        }
+    }
+
+    trimCurrentLogFile(cutoffDate);
+}
+
+void AppLogger::trimCurrentLogFile(const QDate &cutoffDate) const
+{
+    const QString filePath = currentLogFilePath();
+    QFile file(filePath);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+
+    QTextStream input(&file);
+    input.setEncoding(QStringConverter::Utf8);
+    QStringList keptLines;
+    const QRegularExpression lineDatePattern(QStringLiteral(R"(^\[(\d{4}-\d{2}-\d{2}))"));
+    while (!input.atEnd()) {
+        const QString line = input.readLine();
+        const QRegularExpressionMatch match = lineDatePattern.match(line);
+        if (!match.hasMatch()) {
+            keptLines.append(line);
+            continue;
+        }
+
+        const QDate lineDate = QDate::fromString(match.captured(1), QStringLiteral("yyyy-MM-dd"));
+        if (!lineDate.isValid() || lineDate >= cutoffDate) {
+            keptLines.append(line);
+        }
+    }
+    file.close();
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        return;
+    }
+
+    QTextStream output(&file);
+    output.setEncoding(QStringConverter::Utf8);
+    for (const QString &line : keptLines) {
+        output << line << Qt::endl;
+    }
 }
 
 bool AppLogger::appendLineToFile(const QString &filePath, const QString &line) const

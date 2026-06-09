@@ -53,7 +53,7 @@ QHash<int, QByteArray> LogListModel::roleNames() const
 
 void LogListModel::append(const LogEntry &entry)
 {
-    constexpr int maximumVisibleEntries = 1000;
+    constexpr int maximumVisibleEntries = 500;
     const bool wasVisible = accepts(entry);
     const int oldTotalCount = m_allEntries.count();
 

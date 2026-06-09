@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QDate>
 #include <QDateTime>
 #include <QString>
 #include <QUrl>
@@ -44,7 +45,10 @@ private:
     QString levelName(const QString &level) const;
     void write(const QString &level, const QString &message);
     bool appendLineToFile(const QString &filePath, const QString &line) const;
+    void cleanupOldLogs(const QDateTime &timestamp);
+    void trimCurrentLogFile(const QDate &cutoffDate) const;
 
     QString m_logDirectory;
     LogListModel m_logModel;
+    QDate m_lastCleanupDate;
 };

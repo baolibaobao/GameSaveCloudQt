@@ -270,6 +270,9 @@ SteamManager::SteamManager(QObject *parent)
                 setWebDavConnectionStatus(QStringLiteral("夸克网盘连接成功，可以上传和下载快照"));
                 m_logger.info(QStringLiteral("夸克本机网关已就绪：%1，远程目录 %2")
                                   .arg(m_webDavConfig.serverUrl, m_webDavConfig.remoteRootPath));
+                m_cloudManifestLoaded = false;
+                m_cloudManifestRefreshInFlight = false;
+                m_cloudDirectoryByAppId.clear();
                 refreshCloudManifestFromRemote();
                 startQuarkCookieHealthCheck();
             });
@@ -902,6 +905,11 @@ void SteamManager::refreshCloudManifestFromRemote()
         return;
     }
 
+    if (m_cloudManifestRefreshInFlight) {
+        return;
+    }
+
+    m_cloudManifestRefreshInFlight = true;
     m_logger.info(QStringLiteral("开始读取云端快照索引：%1").arg(cloudRootManifestPath()));
     m_quarkGatewayManager.downloadDataFile(
         cloudRootManifestPath(),
@@ -909,6 +917,16 @@ void SteamManager::refreshCloudManifestFromRemote()
 }
 
 void SteamManager::refreshCloudSnapshotsForGame(const QString &appId)
+{
+    refreshCloudSnapshotsForGameInternal(appId, false);
+}
+
+void SteamManager::refreshCloudSnapshotsForGameQuietly(const QString &appId)
+{
+    refreshCloudSnapshotsForGameInternal(appId, true);
+}
+
+void SteamManager::refreshCloudSnapshotsForGameInternal(const QString &appId, bool quiet)
 {
     const GameInfo game = gameByAppId(appId);
     if (!game.isValid()) {
@@ -921,13 +939,30 @@ void SteamManager::refreshCloudSnapshotsForGame(const QString &appId)
         return;
     }
 
+    if (!m_cloudManifestLoaded) {
+        const bool existingQuiet = m_pendingCloudSnapshotRefreshQuietByAppId.value(appId, true);
+        m_pendingCloudSnapshotRefreshQuietByAppId.insert(appId, existingQuiet && quiet);
+        if (!quiet) {
+            m_logger.info(QStringLiteral("云端根索引尚未读取完成，已暂缓读取游戏快照列表：%1").arg(game.displayName));
+        }
+        refreshCloudManifestFromRemote();
+        return;
+    }
+
     const QString gameManifestPath = cloudDirectoryForGame(game) + QStringLiteral("/snapshot-manifest.json");
     if (gameManifestPath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
-        m_logger.info(QStringLiteral("开始读取可选下载快照列表：%1，路径：%2")
-                          .arg(game.displayName, gameManifestPath));
+        const bool shouldLog = !quiet || shouldLogAutomaticCloudRefresh(appId);
+        if (shouldLog) {
+            m_logger.info(QStringLiteral("开始读取可选下载快照列表：%1，路径：%2")
+                              .arg(game.displayName, gameManifestPath));
+        }
         m_quarkGatewayManager.downloadDataFile(
             gameManifestPath,
-            QStringLiteral("cloud-game-list-ui:%1").arg(appId));
+            QStringLiteral("%1:%2")
+                .arg(shouldLog
+                         ? QStringLiteral("cloud-game-list-ui")
+                         : QStringLiteral("cloud-game-list-ui-quiet"),
+                     appId));
         return;
     }
 
@@ -1741,12 +1776,20 @@ void SteamManager::handleCloudDataDownloadFinished(
     }
 
     if (operationId == QStringLiteral("cloud-root-refresh")) {
+        m_cloudManifestRefreshInFlight = false;
         if (success) {
             applyCloudRootManifest(data);
             m_logger.info(QStringLiteral("云端快照索引读取完成：%1").arg(remoteFilePath));
+            const QHash<QString, bool> pendingRefreshes = m_pendingCloudSnapshotRefreshQuietByAppId;
+            m_pendingCloudSnapshotRefreshQuietByAppId.clear();
+            for (auto it = pendingRefreshes.constBegin(); it != pendingRefreshes.constEnd(); ++it) {
+                refreshCloudSnapshotsForGameInternal(it.key(), it.value());
+            }
         } else {
             m_cloudManifestLoaded = true;
             m_cloudSnapshotRecordsByAppId.clear();
+            m_cloudDirectoryByAppId.clear();
+            m_pendingCloudSnapshotRefreshQuietByAppId.clear();
             applyCloudSnapshotRecordsToModel();
             if (isQuarkAuthFailureMessage(message)) {
                 setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 可能已过期或云端读取鉴权异常，请在云同步设置中更新 Cookie 后重新连接"));
@@ -1812,8 +1855,13 @@ void SteamManager::handleCloudDataDownloadFinished(
         return;
     }
 
-    if (operationId.startsWith(QStringLiteral("cloud-game-list-ui:"))) {
-        const QString appId = operationId.mid(QStringLiteral("cloud-game-list-ui:").length());
+    if (operationId.startsWith(QStringLiteral("cloud-game-list-ui:"))
+        || operationId.startsWith(QStringLiteral("cloud-game-list-ui-quiet:"))) {
+        const bool quiet = operationId.startsWith(QStringLiteral("cloud-game-list-ui-quiet:"));
+        const QString prefix = quiet
+                                   ? QStringLiteral("cloud-game-list-ui-quiet:")
+                                   : QStringLiteral("cloud-game-list-ui:");
+        const QString appId = operationId.mid(prefix.length());
         const GameInfo game = gameByAppId(appId);
         if (!game.isValid()) {
             return;
@@ -1832,10 +1880,12 @@ void SteamManager::handleCloudDataDownloadFinished(
                 cloudRecords.isEmpty()
                     ? QStringLiteral("已读取该游戏的 snapshot-manifest.json，但其中没有包含有效的 zip 文件名和云端路径")
                     : QStringLiteral("已从该游戏的 snapshot-manifest.json 读取到完整快照列表，可在弹窗中选择单个快照覆盖下载"));
-            m_logger.info(QStringLiteral("可选下载快照列表读取完成：%1，共 %2 个快照，路径：%3，方式：%4")
-                              .arg(game.displayName)
-                              .arg(cloudRecords.count())
-                              .arg(remoteFilePath, message));
+            if (!quiet) {
+                m_logger.info(QStringLiteral("可选下载快照列表读取完成：%1，共 %2 个快照，路径：%3，方式：%4")
+                                  .arg(game.displayName)
+                                  .arg(cloudRecords.count())
+                                  .arg(remoteFilePath, message));
+            }
         } else {
             m_cloudSnapshotRecordsByAppId.insert(appId, QVariantList{});
             if (isQuarkAuthFailureMessage(message)) {
@@ -1860,6 +1910,10 @@ void SteamManager::handleCloudDataDownloadFinished(
         const GameInfo game = gameByAppId(appId);
         if (!game.isValid()) {
             return;
+        }
+
+        if (success) {
+            applyCloudRootManifest(data);
         }
 
         const QJsonObject gameManifest = buildGameCloudManifest(game);
@@ -2323,14 +2377,33 @@ void SteamManager::applyCloudRootManifest(const QByteArray &data)
     const QJsonArray games = root.value(QStringLiteral("games")).toArray();
 
     m_cloudSnapshotRecordsByAppId.clear();
+    m_cloudDirectoryByAppId.clear();
     for (const QJsonValue &value : games) {
         const QJsonObject item = value.toObject();
         const QString appId = item.value(QStringLiteral("appId")).toString();
         const QString fileName = item.value(QStringLiteral("latestSnapshotFileName")).toString();
         const QString remotePath = item.value(QStringLiteral("latestRemotePath")).toString();
+        QString remoteDirectory = item.value(QStringLiteral("remoteDirectory")).toString().trimmed();
         const int count = item.value(QStringLiteral("snapshotCount")).toInt();
         if (appId.trimmed().isEmpty()) {
             continue;
+        }
+
+        if (remoteDirectory.isEmpty()) {
+            const int slashIndex = remotePath.lastIndexOf(QLatin1Char('/'));
+            if (slashIndex > 0) {
+                remoteDirectory = remotePath.left(slashIndex);
+            }
+        }
+        remoteDirectory.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (!remoteDirectory.isEmpty() && !remoteDirectory.startsWith(QLatin1Char('/'))) {
+            remoteDirectory.prepend(QLatin1Char('/'));
+        }
+        while (remoteDirectory.length() > 1 && remoteDirectory.endsWith(QLatin1Char('/'))) {
+            remoteDirectory.chop(1);
+        }
+        if (!remoteDirectory.isEmpty()) {
+            m_cloudDirectoryByAppId.insert(appId, remoteDirectory);
         }
 
         QVariantList records;
@@ -2394,7 +2467,7 @@ void SteamManager::updateCloudSnapshotStatusForGame(
     }
 }
 
-QString SteamManager::cloudRootManifestPath() const
+QString SteamManager::cloudRootPath() const
 {
     QString rootPath = m_webDavConfig.remoteRootPath.trimmed();
     rootPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
@@ -2408,7 +2481,12 @@ QString SteamManager::cloudRootManifestPath() const
         rootPath.chop(1);
     }
 
-    return rootPath + QStringLiteral("/cloud-manifest.json");
+    return rootPath;
+}
+
+QString SteamManager::cloudRootManifestPath() const
+{
+    return cloudRootPath() + QStringLiteral("/cloud-manifest.json");
 }
 
 QString SteamManager::logDirectoryForSnapshotRoot(const QString &snapshotRootPath) const
@@ -2790,31 +2868,27 @@ void SteamManager::setWebDavTesting(bool testing)
 
 QString SteamManager::cloudDirectoryForGame(const GameInfo &game) const
 {
-    QString name = game.displayName.isEmpty() ? game.name : game.displayName;
-    if (name.trimmed().isEmpty()) {
-        name = game.appId;
+    const QString rootPath = cloudRootPath();
+    const QString cachedDirectory = m_cloudDirectoryByAppId.value(game.appId).trimmed();
+    if (!cachedDirectory.isEmpty()
+        && (cachedDirectory == rootPath
+            || cachedDirectory.startsWith(rootPath + QLatin1Char('/'), Qt::CaseInsensitive))) {
+        return cachedDirectory;
+    }
+
+    QString name = game.appId.trimmed();
+    if (name.isEmpty()) {
+        name = game.displayName.isEmpty() ? game.name : game.displayName;
     }
 
     name.replace(QRegularExpression(QStringLiteral(R"([<>:"/\\|?*])")), QStringLiteral("_"));
-    name.replace(QRegularExpression(QStringLiteral(R"(\s+)")), QStringLiteral(" "));
+    name.replace(QRegularExpression(QStringLiteral(R"(\s+)")), QStringLiteral("_"));
     name = name.trimmed().left(80);
     if (name.isEmpty()) {
         name = QStringLiteral("Unknown_Game");
     }
 
-    QString rootPath = m_webDavConfig.remoteRootPath.trimmed();
-    rootPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    if (rootPath.isEmpty()) {
-        rootPath = QStringLiteral("/GameSaveCloudQt");
-    }
-    if (!rootPath.startsWith(QLatin1Char('/'))) {
-        rootPath.prepend(QLatin1Char('/'));
-    }
-    while (rootPath.length() > 1 && rootPath.endsWith(QLatin1Char('/'))) {
-        rootPath.chop(1);
-    }
-
-    return QStringLiteral("%1/%2").arg(rootPath, name);
+    return QStringLiteral("%1/apps/%2").arg(rootPath, name);
 }
 
 QString SteamManager::localDownloadPathForSnapshot(const GameInfo &game, const QString &fileName) const
@@ -2909,4 +2983,16 @@ bool SteamManager::isQuarkAuthFailureMessage(const QString &message) const
         || text.contains(QStringLiteral("主机需要验证"))
         || text.contains(QStringLiteral("需要验证"))
         || text.contains(QStringLiteral("鉴权"));
+}
+
+bool SteamManager::shouldLogAutomaticCloudRefresh(const QString &appId)
+{
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QDateTime lastLoggedAt = m_lastAutomaticCloudRefreshLogByAppId.value(appId);
+    if (lastLoggedAt.isValid() && lastLoggedAt.secsTo(now) < 10) {
+        return false;
+    }
+
+    m_lastAutomaticCloudRefreshLogByAppId.insert(appId, now);
+    return true;
 }

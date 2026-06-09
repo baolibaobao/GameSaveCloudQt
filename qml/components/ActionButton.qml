@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Effects
 
 Rectangle {
     id: control
@@ -22,10 +23,18 @@ Rectangle {
     color: buttonBackground(kind, buttonMouseArea.containsMouse && enabled)
     border.width: kind === "primary" ? 0 : 1
     border.color: buttonBorder(kind, buttonMouseArea.containsMouse && enabled)
+    layer.enabled: darkMode && enabled && kind === "primary"
+    layer.effect: MultiEffect {
+        shadowEnabled: true
+        shadowBlur: 0.38
+        shadowOpacity: buttonMouseArea.containsMouse ? 0.28 : 0.15
+        shadowVerticalOffset: 4
+        shadowColor: "#553B82F6"
+    }
 
     function buttonBackground(buttonKind, hovered) {
         if (buttonKind === "primary") {
-            return hovered ? "#006CBE" : accentColor
+            return hovered ? (darkMode ? "#1D4ED8" : "#006CBE") : (darkMode ? "#2563EB" : accentColor)
         }
         if (buttonKind === "danger") {
             return hovered
@@ -33,8 +42,8 @@ Rectangle {
                     : (darkMode ? "#222B3C" : "#FFFFFF")
         }
         return hovered
-                ? (darkMode ? "#2A3448" : "#E7F3FF")
-                : (darkMode ? "#222B3C" : "#F1F7FD")
+                ? (darkMode ? "#29384F" : "#E7F3FF")
+                : (darkMode ? "#1E293B" : "#F1F7FD")
     }
 
     function buttonBorder(buttonKind, hovered) {
