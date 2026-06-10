@@ -76,6 +76,10 @@ public:
     Q_INVOKABLE bool deleteLocalSnapshotsForGame(const QString &appId);
     Q_INVOKABLE bool restoreLocalSnapshotForGame(const QString &appId, const QString &snapshotPathOrFileName);
     Q_INVOKABLE bool restoreCloudSnapshotForGame(const QString &appId, const QString &snapshotFileNameOrRemotePath);
+    Q_INVOKABLE QVariantList restoreBackupsForGame(const QString &appId) const;
+    Q_INVOKABLE bool restoreBackupForGame(const QString &appId, const QString &backupPathOrFileName);
+    Q_INVOKABLE bool deleteRestoreBackupsForGame(const QString &appId);
+    Q_INVOKABLE bool openRestoreBackupDirectoryForGame(const QString &appId);
     Q_INVOKABLE bool uploadAllSnapshotsForGame(const QString &appId);
     Q_INVOKABLE bool uploadLatestSnapshotForGame(const QString &appId);
     Q_INVOKABLE bool downloadAllSnapshotsForGame(const QString &appId);
@@ -117,6 +121,11 @@ signals:
     void quarkGatewayStatusChanged();
     void installedGamesChanged();
     void cloudSnapshotsChanged(const QString &appId);
+    void userAlertRequested(
+        const QString &title,
+        const QString &message,
+        const QString &detail,
+        bool danger);
 
 private:
     QStringList steamAppsDirectories(const QString &steamRootPath) const;
@@ -181,6 +190,7 @@ private:
         const QString &detail);
     QString cloudRootPath() const;
     QString cloudRootManifestPath() const;
+    QString restoreBackupRootPath() const;
     QString defaultStorageRootPath() const;
     QString storageRootFromSnapshotRoot(const QString &snapshotRootPath) const;
     QString snapshotDirectoryForStorageRoot(const QString &storageRootPath) const;

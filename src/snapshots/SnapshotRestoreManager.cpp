@@ -103,6 +103,95 @@ QVariantMap SnapshotRestoreManager::restoreSnapshot(
     return result;
 }
 
+QVariantList SnapshotRestoreManager::backupsForGame(const QString &backupRootPath, const GameInfo &game) const
+{
+    QVariantList backups;
+    const QString directoryPath = backupDirectoryForGame(backupRootPath, game);
+    const QDir directory(directoryPath);
+    if (!game.isValid() || !directory.exists()) {
+        return backups;
+    }
+
+    const QFileInfoList files = directory.entryInfoList(
+        {QStringLiteral("*.zip")},
+        QDir::Files | QDir::Readable,
+        QDir::Time);
+    for (const QFileInfo &fileInfo : files) {
+        QVariantMap backup;
+        backup.insert(QStringLiteral("fileName"), fileInfo.fileName());
+        backup.insert(QStringLiteral("zipPath"), QDir::toNativeSeparators(fileInfo.absoluteFilePath()));
+        backup.insert(QStringLiteral("createdAtUtc"), fileInfo.birthTime().toUTC().toString(Qt::ISODate));
+        backup.insert(QStringLiteral("zipSize"), QString::number(fileInfo.size()));
+        backup.insert(QStringLiteral("uploadState"), QStringLiteral("restore_backup"));
+        backups.append(backup);
+    }
+
+    return backups;
+}
+
+QVariantMap SnapshotRestoreManager::deleteBackupsForGame(const QString &backupRootPath, const GameInfo &game) const
+{
+    QVariantMap result;
+    result.insert(QStringLiteral("success"), false);
+
+    if (!game.isValid()) {
+        result.insert(QStringLiteral("status"), QStringLiteral("恢复前备份删除失败"));
+        result.insert(QStringLiteral("detail"), QStringLiteral("游戏信息无效，无法定位恢复前备份目录"));
+        return result;
+    }
+
+    QString rootPath = QDir::cleanPath(backupRootPath.trimmed());
+    if (rootPath.isEmpty()) {
+        rootPath = QDir::cleanPath(QStringLiteral("restore-backups"));
+    }
+
+    const QFileInfo rootInfo(rootPath);
+    const QString rootAbsolutePath = QDir::fromNativeSeparators(QDir::cleanPath(rootInfo.absoluteFilePath()));
+    const QString directoryPath = backupDirectoryForGame(backupRootPath, game);
+    const QFileInfo directoryInfo(directoryPath);
+    const QString directoryAbsolutePath = QDir::fromNativeSeparators(QDir::cleanPath(directoryInfo.absoluteFilePath()));
+    const QString rootPrefix = rootAbsolutePath.endsWith(QLatin1Char('/'))
+                                   ? rootAbsolutePath
+                                   : rootAbsolutePath + QLatin1Char('/');
+
+    /*
+     * 删除的只是软件自动生成的“恢复前备份”目录，不是游戏真实存档目录。
+     * 这里先做路径边界检查，确保目标目录一定在恢复前备份根目录里面。
+     */
+    if (directoryAbsolutePath.isEmpty()
+        || directoryAbsolutePath.compare(rootAbsolutePath, Qt::CaseInsensitive) == 0
+        || !directoryAbsolutePath.startsWith(rootPrefix, Qt::CaseInsensitive)) {
+        result.insert(QStringLiteral("status"), QStringLiteral("恢复前备份删除失败"));
+        result.insert(QStringLiteral("detail"),
+                      QStringLiteral("安全检查未通过，目标目录不在恢复前备份根目录内部：%1")
+                          .arg(QDir::toNativeSeparators(directoryAbsolutePath)));
+        return result;
+    }
+
+    if (!directoryInfo.exists()) {
+        result.insert(QStringLiteral("success"), true);
+        result.insert(QStringLiteral("status"), QStringLiteral("恢复前备份为空"));
+        result.insert(QStringLiteral("detail"), QStringLiteral("该游戏当前没有恢复前自动备份"));
+        result.insert(QStringLiteral("backupCount"), 0);
+        return result;
+    }
+
+    const int backupCount = backupsForGame(backupRootPath, game).count();
+    QDir directory(directoryAbsolutePath);
+    if (!directory.removeRecursively()) {
+        result.insert(QStringLiteral("status"), QStringLiteral("恢复前备份删除失败"));
+        result.insert(QStringLiteral("detail"), QStringLiteral("无法删除恢复前备份目录，请确认没有程序正在占用其中的 zip 文件：%1")
+                      .arg(QDir::toNativeSeparators(directoryAbsolutePath)));
+        return result;
+    }
+
+    result.insert(QStringLiteral("success"), true);
+    result.insert(QStringLiteral("status"), QStringLiteral("恢复前备份已删除"));
+    result.insert(QStringLiteral("detail"), QStringLiteral("已删除该游戏的恢复前自动备份，共清理 %1 个 zip 文件").arg(backupCount));
+    result.insert(QStringLiteral("backupCount"), 0);
+    return result;
+}
+
 QString SnapshotRestoreManager::backupDirectoryForGame(const QString &backupRootPath, const GameInfo &game) const
 {
     QString rootPath = QDir::cleanPath(backupRootPath.trimmed());

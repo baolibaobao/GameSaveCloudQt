@@ -692,6 +692,11 @@ bool SteamManager::restoreLocalSnapshotForGame(const QString &appId, const QStri
 
     if (m_processMonitor.isGameRunning(appId)) {
         m_logger.warning(QStringLiteral("快照恢复已阻止：%1 正在运行，请先关闭游戏后再恢复存档").arg(game.displayName));
+        emit userAlertRequested(
+            QStringLiteral("快照恢复已阻止"),
+            QStringLiteral("%1 正在运行，请先关闭游戏后再恢复存档").arg(game.displayName),
+            QStringLiteral("为了避免存档被游戏进程重新写入或损坏，软件已经停止本次恢复操作。关闭游戏后，可以再次点击恢复。"),
+            false);
         refreshSnapshotRecordsForGame(
             appId,
             QStringLiteral("快照恢复已阻止"),
@@ -781,6 +786,11 @@ bool SteamManager::restoreCloudSnapshotForGame(const QString &appId, const QStri
 
     if (m_processMonitor.isGameRunning(appId)) {
         m_logger.warning(QStringLiteral("云端快照恢复已阻止：%1 正在运行，请先关闭游戏后再恢复存档").arg(game.displayName));
+        emit userAlertRequested(
+            QStringLiteral("云端快照恢复已阻止"),
+            QStringLiteral("%1 正在运行，请先关闭游戏后再恢复云端快照").arg(game.displayName),
+            QStringLiteral("云端快照会覆盖游戏真实存档目录。为了避免存档被游戏进程重新写入或损坏，请先完全关闭游戏后再恢复。"),
+            false);
         refreshSnapshotRecordsForGame(
             appId,
             QStringLiteral("云端快照恢复已阻止"),
@@ -855,6 +865,137 @@ bool SteamManager::restoreCloudSnapshotForGame(const QString &appId, const QStri
 
     m_logger.warning(QStringLiteral("云端快照恢复失败：%1 未找到所选云端快照 %2").arg(game.displayName, selector));
     return false;
+}
+
+QVariantList SteamManager::restoreBackupsForGame(const QString &appId) const
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return {};
+    }
+
+    return m_snapshotRestoreManager.backupsForGame(restoreBackupRootPath(), game);
+}
+
+bool SteamManager::restoreBackupForGame(const QString &appId, const QString &backupPathOrFileName)
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return false;
+    }
+
+    if (!game.savePathCanSync || game.savePath.trimmed().isEmpty()) {
+        m_logger.warning(QStringLiteral("恢复前备份回滚失败：%1 当前没有可恢复的本地存档目录").arg(game.displayName));
+        return false;
+    }
+
+    if (m_processMonitor.isGameRunning(appId)) {
+        m_logger.warning(QStringLiteral("恢复前备份回滚已阻止：%1 正在运行，请先关闭游戏").arg(game.displayName));
+        emit userAlertRequested(
+            QStringLiteral("恢复前备份回滚已阻止"),
+            QStringLiteral("%1 正在运行，请先关闭游戏后再回滚恢复前备份").arg(game.displayName),
+            QStringLiteral("回滚恢复前备份会覆盖游戏真实存档目录。为了避免存档被游戏进程重新写入或损坏，请先完全关闭游戏后再操作。"),
+            false);
+        refreshSnapshotRecordsForGame(
+            appId,
+            QStringLiteral("恢复前备份回滚已阻止"),
+            QStringLiteral("检测到游戏进程仍在运行。为了避免存档被游戏重新写入或损坏，请先关闭游戏后再回滚恢复前备份"),
+            false);
+        return false;
+    }
+
+    const QString selector = backupPathOrFileName.trimmed();
+    if (selector.isEmpty()) {
+        m_logger.warning(QStringLiteral("恢复前备份回滚失败：%1 未选择备份 zip").arg(game.displayName));
+        return false;
+    }
+
+    QString selectedZipPath;
+    const QVariantList backups = restoreBackupsForGame(appId);
+    for (const QVariant &item : backups) {
+        const QVariantMap backup = item.toMap();
+        const QString zipPath = backup.value(QStringLiteral("zipPath")).toString();
+        const QString fileName = backup.value(QStringLiteral("fileName")).toString();
+        if (zipPath == selector || fileName == selector) {
+            selectedZipPath = zipPath;
+            break;
+        }
+    }
+
+    if (selectedZipPath.trimmed().isEmpty()) {
+        m_logger.warning(QStringLiteral("恢复前备份回滚失败：%1 的备份列表中未找到 %2").arg(game.displayName, selector));
+        return false;
+    }
+
+    m_logger.info(QStringLiteral("开始从恢复前备份回滚：%1，备份：%2，目标存档目录：%3")
+                      .arg(game.displayName,
+                           QDir::toNativeSeparators(selectedZipPath),
+                           QDir::toNativeSeparators(game.savePath)));
+    const QVariantMap result = m_snapshotRestoreManager.restoreSnapshot(game, selectedZipPath, restoreBackupRootPath());
+    const QString status = result.value(QStringLiteral("status")).toString();
+    const QString detail = result.value(QStringLiteral("detail")).toString();
+    const QString backupPath = result.value(QStringLiteral("backupPath")).toString();
+    const bool success = result.value(QStringLiteral("success")).toBool();
+
+    refreshSnapshotRecordsForGame(
+        appId,
+        success ? QStringLiteral("恢复前备份回滚完成") : status,
+        backupPath.trimmed().isEmpty()
+            ? detail
+            : QStringLiteral("%1；回滚前也已再次备份当前存档：%2").arg(detail, QDir::toNativeSeparators(backupPath)),
+        false);
+
+    if (success) {
+        m_logger.info(QStringLiteral("恢复前备份回滚完成：%1，备份：%2").arg(game.displayName, QDir::toNativeSeparators(selectedZipPath)));
+    } else {
+        m_logger.error(QStringLiteral("恢复前备份回滚失败：%1，备份：%2，原因：%3").arg(game.displayName, QDir::toNativeSeparators(selectedZipPath), detail));
+    }
+
+    return success;
+}
+
+bool SteamManager::deleteRestoreBackupsForGame(const QString &appId)
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return false;
+    }
+
+    const QVariantMap result = m_snapshotRestoreManager.deleteBackupsForGame(restoreBackupRootPath(), game);
+    const QString status = result.value(QStringLiteral("status")).toString();
+    const QString detail = result.value(QStringLiteral("detail")).toString();
+    if (result.value(QStringLiteral("success")).toBool()) {
+        m_logger.info(QStringLiteral("恢复前备份清理完成：%1，结果：%2，详情：%3").arg(game.displayName, status, detail));
+    } else {
+        m_logger.warning(QStringLiteral("恢复前备份清理失败：%1，结果：%2，详情：%3").arg(game.displayName, status, detail));
+    }
+    return result.value(QStringLiteral("success")).toBool();
+}
+
+bool SteamManager::openRestoreBackupDirectoryForGame(const QString &appId)
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return false;
+    }
+
+    const QString directoryPath = m_snapshotRestoreManager.backupDirectoryForGame(restoreBackupRootPath(), game);
+    QDir directory(directoryPath);
+    if (!directory.exists() && !directory.mkpath(QStringLiteral("."))) {
+        m_logger.warning(QStringLiteral("打开恢复前备份目录失败：%1，无法创建目录：%2")
+                             .arg(game.displayName, QDir::toNativeSeparators(directoryPath)));
+        return false;
+    }
+
+    const bool opened = QDesktopServices::openUrl(QUrl::fromLocalFile(directory.absolutePath()));
+    if (opened) {
+        m_logger.info(QStringLiteral("已打开恢复前备份目录：%1，路径：%2")
+                          .arg(game.displayName, QDir::toNativeSeparators(directory.absolutePath())));
+    } else {
+        m_logger.warning(QStringLiteral("打开恢复前备份目录失败：%1，路径：%2")
+                             .arg(game.displayName, QDir::toNativeSeparators(directory.absolutePath())));
+    }
+    return opened;
 }
 
 bool SteamManager::uploadLatestSnapshotForGame(const QString &appId)
@@ -2699,6 +2840,11 @@ QString SteamManager::cloudRootPath() const
 QString SteamManager::cloudRootManifestPath() const
 {
     return cloudRootPath() + QStringLiteral("/cloud-manifest.json");
+}
+
+QString SteamManager::restoreBackupRootPath() const
+{
+    return QDir(storageRootFromSnapshotRoot(snapshotRootPath())).absoluteFilePath(QStringLiteral("恢复前备份"));
 }
 
 QString SteamManager::logDirectoryForSnapshotRoot(const QString &snapshotRootPath) const

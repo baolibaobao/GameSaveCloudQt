@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include "models/GameInfo.h"
@@ -12,9 +13,11 @@ public:
         const GameInfo &game,
         const QString &zipPath,
         const QString &backupRootPath) const;
+    QVariantList backupsForGame(const QString &backupRootPath, const GameInfo &game) const;
+    QVariantMap deleteBackupsForGame(const QString &backupRootPath, const GameInfo &game) const;
+    QString backupDirectoryForGame(const QString &backupRootPath, const GameInfo &game) const;
 
 private:
-    QString backupDirectoryForGame(const QString &backupRootPath, const GameInfo &game) const;
     QString safeSnapshotBaseName(const GameInfo &game) const;
     QString timestampForFileName() const;
     QString escapedPowerShellSingleQuoted(QString value) const;
