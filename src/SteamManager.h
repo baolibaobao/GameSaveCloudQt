@@ -26,6 +26,7 @@
 #include "sync/QuarkGatewayManager.h"
 #include "sync/WebDavClient.h"
 #include "sync/WebDavSettings.h"
+#include "system/StartupManager.h"
 
 class SteamManager : public QObject
 {
@@ -43,6 +44,7 @@ class SteamManager : public QObject
     Q_PROPERTY(QString quarkCookie READ quarkCookie NOTIFY quarkGatewaySettingsChanged)
     Q_PROPERTY(QString quarkGatewayStatus READ quarkGatewayStatus NOTIFY quarkGatewayStatusChanged)
     Q_PROPERTY(bool autoSyncEnabled READ autoSyncEnabled NOTIFY autoSyncSettingsChanged)
+    Q_PROPERTY(bool launchAtStartup READ launchAtStartup NOTIFY startupSettingsChanged)
     Q_PROPERTY(QVariantList installedGames READ installedGames NOTIFY installedGamesChanged)
     Q_PROPERTY(GameListModel *gameModel READ gameModel CONSTANT)
     Q_PROPERTY(LogListModel *logModel READ logModel CONSTANT)
@@ -63,6 +65,7 @@ public:
     QString quarkCookie() const;
     QString quarkGatewayStatus() const;
     bool autoSyncEnabled() const;
+    bool launchAtStartup() const;
     QVariantList installedGames() const;
     GameListModel *gameModel();
     LogListModel *logModel();
@@ -114,6 +117,7 @@ public:
     Q_INVOKABLE bool autoSyncEnabledForGame(const QString &appId) const;
     Q_INVOKABLE bool setAutoSyncEnabledForGame(const QString &appId, bool enabled);
     Q_INVOKABLE bool setAutoSyncEnabledForAllGames(bool enabled);
+    Q_INVOKABLE bool setLaunchAtStartup(bool enabled);
 
 signals:
     void steamPathChanged();
@@ -126,6 +130,7 @@ signals:
     void quarkGatewaySettingsChanged();
     void quarkGatewayStatusChanged();
     void autoSyncSettingsChanged();
+    void startupSettingsChanged();
     void installedGamesChanged();
     void cloudSnapshotsChanged(const QString &appId);
     void userAlertRequested(
@@ -261,6 +266,7 @@ private:
     QString m_quarkCookie;
     QString m_quarkGatewayStatus;
     bool m_autoSyncEnabled = false;
+    StartupManager m_startupManager;
     QHash<QString, QString> m_pendingSnapshotUploadAppIds;
     QHash<QString, QString> m_pendingSnapshotUploadFileNames;
     QSet<QString> m_pendingBatchSnapshotUploadPaths;

@@ -363,6 +363,11 @@ bool SteamManager::autoSyncEnabled() const
     return m_autoSyncEnabled;
 }
 
+bool SteamManager::launchAtStartup() const
+{
+    return m_startupManager.isEnabled();
+}
+
 QVariantList SteamManager::installedGames() const
 {
     return m_installedGames;
@@ -1551,6 +1556,34 @@ bool SteamManager::setAutoSyncEnabledForAllGames(bool enabled)
     m_logger.info(QStringLiteral("自动同步批量设置完成：%1，影响游戏数量：%2")
                       .arg(enabled ? QStringLiteral("全开") : QStringLiteral("全关"))
                       .arg(updatedCount));
+    return true;
+}
+
+bool SteamManager::setLaunchAtStartup(bool enabled)
+{
+    const bool wasEnabled = m_startupManager.isEnabled();
+    QString errorMessage;
+    if (!m_startupManager.setEnabled(enabled, &errorMessage)) {
+        m_logger.warning(QStringLiteral("开机自启设置失败：%1").arg(errorMessage));
+        emit userAlertRequested(
+            QStringLiteral("开机自启设置失败"),
+            enabled
+                ? QStringLiteral("未能开启开机自启。")
+                : QStringLiteral("未能关闭开机自启。"),
+            errorMessage,
+            false);
+        emit startupSettingsChanged();
+        return false;
+    }
+
+    const bool isEnabled = m_startupManager.isEnabled();
+    if (wasEnabled != isEnabled) {
+        emit startupSettingsChanged();
+    }
+
+    m_logger.info(isEnabled
+                      ? QStringLiteral("开机自启已开启：软件会随 Windows 登录自动启动并进入后台监控")
+                      : QStringLiteral("开机自启已关闭：软件不会随 Windows 登录自动启动"));
     return true;
 }
 

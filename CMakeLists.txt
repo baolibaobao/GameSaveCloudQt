@@ -56,6 +56,8 @@ qt_add_executable(GameSaveCloudQt
     src/storage/SettingsManager.cpp
     src/sync/WebDavSettings.h
     src/sync/WebDavSettings.cpp
+    src/system/StartupManager.h
+    src/system/StartupManager.cpp
     src/sync/WebDavClient.h
     src/sync/WebDavClient.cpp
     src/sync/QuarkGatewayManager.h
@@ -121,6 +123,13 @@ else()
 endif()
 
 if(WIN32)
+    target_link_libraries(GameSaveCloudQt
+        PRIVATE
+            Ole32
+            Shell32
+            Uuid
+    )
+
     target_compile_definitions(GameSaveCloudQt
         PRIVATE
             WIN32_LEAN_AND_MEAN

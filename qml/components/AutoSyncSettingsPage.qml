@@ -121,6 +121,72 @@ ColumnLayout {
 
     Rectangle {
         Layout.fillWidth: true
+        Layout.preferredHeight: 104
+        radius: 20
+        color: control.darkMode ? "#172030" : "#F7F9FC"
+        border.width: 1
+        border.color: control.darkMode ? "#2A3448" : "#E8EDF5"
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 16
+
+            Rectangle {
+                Layout.preferredWidth: 48
+                Layout.preferredHeight: 48
+                radius: 16
+                color: control.backend && control.backend.launchAtStartup
+                       ? (control.darkMode ? "#16384A" : "#E0F2FE")
+                       : (control.darkMode ? "#263244" : "#E8EEF7")
+                border.width: 1
+                border.color: control.backend && control.backend.launchAtStartup
+                              ? (control.darkMode ? "#256A8A" : "#BAE6FD")
+                              : (control.darkMode ? "#334155" : "#CBD5E1")
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "\uE7E8"
+                    color: control.backend && control.backend.launchAtStartup ? "#0284C7" : "#64748B"
+                    font.family: "Segoe MDL2 Assets"
+                    font.pixelSize: 21
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 5
+
+                Text {
+                    text: "开机自启"
+                    color: control.textColor
+                    font.pixelSize: 17
+                    font.bold: true
+                }
+
+                Text {
+                    text: "默认关闭。开启后，Windows 登录时会自动启动软件。"
+                    color: control.mutedTextColor
+                    font.pixelSize: 13
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+            }
+
+            ToggleSwitch {
+                checked: control.backend ? control.backend.launchAtStartup : false
+                enabled: !!control.backend
+                darkMode: control.darkMode
+                accentColor: control.accentColor
+                onToggled: function(nextChecked) {
+                    control.backend.setLaunchAtStartup(nextChecked)
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        Layout.fillWidth: true
         Layout.fillHeight: true
         radius: 20
         color: control.darkMode ? "#172030" : "#F7F9FC"
