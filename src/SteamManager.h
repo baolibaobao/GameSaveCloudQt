@@ -177,6 +177,7 @@ private:
         const QByteArray &data,
         const QString &message);
     void requestCloudManifestMergeForGame(const QString &appId);
+    void uploadCloudManifestsForGame(const GameInfo &game);
     QJsonObject buildGameCloudManifest(const GameInfo &game) const;
     QJsonObject buildCloudRootManifest(
         const QByteArray &existingRootData,

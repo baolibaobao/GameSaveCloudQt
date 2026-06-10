@@ -2335,6 +2335,37 @@ void SteamManager::handleCloudDataDownloadFinished(
         return;
     }
 
+    if (operationId.startsWith(QStringLiteral("cloud-game-merge-read:"))) {
+        const QString appId = operationId.mid(QStringLiteral("cloud-game-merge-read:").length());
+        const GameInfo game = gameByAppId(appId);
+        if (!game.isValid()) {
+            return;
+        }
+
+        if (success) {
+            const QJsonObject gameManifest = QJsonDocument::fromJson(data).object();
+            const QVariantList cloudRecords = cloudSnapshotRecordsFromGameManifest(gameManifest);
+            if (!cloudRecords.isEmpty()) {
+                m_cloudSnapshotRecordsByAppId.insert(appId, cloudRecords);
+                updateCloudSnapshotStatusForGame(
+                    appId,
+                    cloudRecords,
+                    QStringLiteral("已合并云端现有快照索引"),
+                    QStringLiteral("写入云端索引前，已先读取并合并云端目录中真实存在的 zip 快照"));
+            }
+            m_logger.info(QStringLiteral("云端索引合并准备完成：%1，现有云端快照 %2 个，路径：%3，方式：%4")
+                              .arg(game.displayName)
+                              .arg(cloudRecords.count())
+                              .arg(remoteFilePath, message));
+        } else {
+            m_logger.warning(QStringLiteral("云端索引合并读取失败：%1，路径：%2，原因：%3；将仅用本地已确认快照继续写入")
+                                 .arg(game.displayName, remoteFilePath, message));
+        }
+
+        uploadCloudManifestsForGame(game);
+        return;
+    }
+
     if (operationId.startsWith(QStringLiteral("cloud-game-list-ui:"))
         || operationId.startsWith(QStringLiteral("cloud-game-list-ui-quiet:"))) {
         const bool quiet = operationId.startsWith(QStringLiteral("cloud-game-list-ui-quiet:"));
@@ -2392,8 +2423,12 @@ void SteamManager::handleCloudDataDownloadFinished(
             return;
         }
 
+        const QVariantList currentGameCloudRecords = m_cloudSnapshotRecordsByAppId.value(appId);
         if (success) {
             applyCloudRootManifest(data);
+            if (!currentGameCloudRecords.isEmpty()) {
+                m_cloudSnapshotRecordsByAppId.insert(appId, currentGameCloudRecords);
+            }
         }
 
         const QJsonObject gameManifest = buildGameCloudManifest(game);
@@ -2419,6 +2454,20 @@ void SteamManager::requestCloudManifestMergeForGame(const QString &appId)
         return;
     }
 
+    const QString gameManifestPath = cloudDirectoryForGame(game) + QStringLiteral("/snapshot-manifest.json");
+    if (gameManifestPath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
+        m_quarkGatewayManager.downloadDataFile(
+            gameManifestPath,
+            QStringLiteral("cloud-game-merge-read:%1").arg(appId));
+        return;
+    }
+
+    uploadCloudManifestsForGame(game);
+}
+
+void SteamManager::uploadCloudManifestsForGame(const GameInfo &game)
+{
+    const QString appId = game.appId;
     const QJsonObject gameManifest = buildGameCloudManifest(game);
     const QVariantList cloudRecords = cloudSnapshotRecordsFromGameManifest(gameManifest);
     if (cloudRecords.isEmpty()) {
@@ -2453,7 +2502,44 @@ QJsonObject SteamManager::buildGameCloudManifest(const GameInfo &game) const
      * - 保存 remotePath，方便换电脑后不依赖本地 manifest 也能下载；
      * - 不记录具体存档文件列表，恢复解压会在阶段 9 单独处理。
      */
-    const QVariantList records = cloudSnapshotRecordsFromExistingLocalSnapshots(game);
+    QVariantList records;
+    QSet<QString> seenFileNames;
+
+    auto appendRecords = [&](const QVariantList &items) {
+        for (const QVariant &item : items) {
+            QVariantMap record = item.toMap();
+            QString fileName = record.value(QStringLiteral("fileName")).toString().trimmed();
+            QString remotePath = record.value(QStringLiteral("remotePath")).toString().trimmed();
+            if (fileName.isEmpty() && !remotePath.isEmpty()) {
+                fileName = QFileInfo(remotePath).fileName();
+                record.insert(QStringLiteral("fileName"), fileName);
+            }
+            if (remotePath.isEmpty() && !fileName.isEmpty()) {
+                remotePath = cloudDirectoryForGame(game) + QLatin1Char('/') + fileName;
+                record.insert(QStringLiteral("remotePath"), remotePath);
+            }
+            if (fileName.isEmpty() || remotePath.isEmpty()) {
+                continue;
+            }
+
+            const QString fileKey = fileName.toCaseFolded();
+            if (seenFileNames.contains(fileKey)) {
+                continue;
+            }
+
+            seenFileNames.insert(fileKey);
+            records.append(record);
+        }
+    };
+
+    appendRecords(cloudSnapshotRecordsFromExistingLocalSnapshots(game));
+    appendRecords(m_cloudSnapshotRecordsByAppId.value(game.appId));
+
+    std::sort(records.begin(), records.end(), [](const QVariant &left, const QVariant &right) {
+        return left.toMap().value(QStringLiteral("fileName")).toString()
+            > right.toMap().value(QStringLiteral("fileName")).toString();
+    });
+
     QJsonArray snapshots;
     for (const QVariant &item : records) {
         const QVariantMap record = item.toMap();

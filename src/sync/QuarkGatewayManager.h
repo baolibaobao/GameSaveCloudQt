@@ -146,6 +146,11 @@ private:
         const QString &remoteFilePath,
         const QString &operationId,
         const QString &firstErrorMessage);
+    void mergeSnapshotManifestWithDirectoryListing(
+        const QString &remoteFilePath,
+        const QString &operationId,
+        const QByteArray &manifestData,
+        const QString &readMessage);
     void downloadSnapshotManifestFromDirectoryListing(
         const QString &remoteFilePath,
         const QString &operationId,

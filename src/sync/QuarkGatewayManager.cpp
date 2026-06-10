@@ -15,9 +15,11 @@
 #include <QNetworkRequest>
 #include <QRandomGenerator>
 #include <QSettings>
+#include <QSet>
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <algorithm>
 #include <memory>
 
 #include "storage/AppSettings.h"
@@ -1132,6 +1134,15 @@ void QuarkGatewayManager::downloadDataFromUrl(
             return;
         }
 
+        if (remoteFilePath.endsWith(QStringLiteral("/snapshot-manifest.json"))) {
+            mergeSnapshotManifestWithDirectoryListing(
+                remoteFilePath,
+                operationId,
+                payload,
+                QStringLiteral("云端索引已读取"));
+            return;
+        }
+
         emit dataFileDownloadFinished(true,
                                       remoteFilePath,
                                       operationId,
@@ -1185,11 +1196,155 @@ void QuarkGatewayManager::downloadDataFromWebDav(
             return;
         }
 
+        if (remoteFilePath.endsWith(QStringLiteral("/snapshot-manifest.json"))) {
+            mergeSnapshotManifestWithDirectoryListing(
+                remoteFilePath,
+                operationId,
+                payload,
+                QStringLiteral("云端索引已通过 WebDAV 兜底读取"));
+            return;
+        }
+
         emit dataFileDownloadFinished(true,
                                       remoteFilePath,
                                       operationId,
                                       payload,
                                       QStringLiteral("云端索引已通过 WebDAV 兜底读取"));
+    });
+}
+
+void QuarkGatewayManager::mergeSnapshotManifestWithDirectoryListing(
+    const QString &remoteFilePath,
+    const QString &operationId,
+    const QByteArray &manifestData,
+    const QString &readMessage)
+{
+    const QString cleanManifestPath = normalizedRemotePath(remoteFilePath);
+    const int slashIndex = cleanManifestPath.lastIndexOf(QLatin1Char('/'));
+    const QString remoteDirectory = slashIndex > 0
+                                        ? cleanManifestPath.left(slashIndex)
+                                        : QStringLiteral("/Quark/GameSaveCloudQt");
+
+    QNetworkRequest request = apiRequest(QStringLiteral("/api/fs/list"), m_apiToken);
+    QJsonObject body;
+    body.insert(QStringLiteral("path"), remoteDirectory);
+    body.insert(QStringLiteral("password"), QString());
+    body.insert(QStringLiteral("page"), 1);
+    body.insert(QStringLiteral("per_page"), 500);
+    body.insert(QStringLiteral("refresh"), true);
+
+    QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cleanManifestPath, remoteDirectory, operationId, manifestData, readMessage]() {
+        const QNetworkReply::NetworkError error = reply->error();
+        const QString errorString = reply->errorString();
+        const QByteArray payload = reply->readAll();
+        reply->deleteLater();
+
+        const QJsonObject root = QJsonDocument::fromJson(payload).object();
+        if (error != QNetworkReply::NoError || root.value(QStringLiteral("code")).toInt() != 200) {
+            emit dataFileDownloadFinished(true,
+                                          cleanManifestPath,
+                                          operationId,
+                                          manifestData,
+                                          QStringLiteral("%1；目录刷新合并失败，暂按索引文件显示：%2")
+                                              .arg(readMessage, apiMessageFromPayload(payload, errorString)));
+            return;
+        }
+
+        QJsonObject manifest = QJsonDocument::fromJson(manifestData).object();
+        if (manifest.isEmpty()) {
+            manifest.insert(QStringLiteral("schemaVersion"), 1);
+        }
+
+        QSet<QString> seenFileNames;
+        QList<QJsonObject> mergedSnapshots;
+        const QJsonArray manifestSnapshots = manifest.value(QStringLiteral("snapshots")).toArray();
+        for (const QJsonValue &value : manifestSnapshots) {
+            QJsonObject snapshot = value.toObject();
+            QString fileName = snapshot.value(QStringLiteral("fileName")).toString().trimmed();
+            QString remotePath = snapshot.value(QStringLiteral("remotePath")).toString().trimmed();
+            if (fileName.isEmpty() && !remotePath.isEmpty()) {
+                fileName = QFileInfo(remotePath).fileName();
+                snapshot.insert(QStringLiteral("fileName"), fileName);
+            }
+            if (remotePath.isEmpty() && !fileName.isEmpty()) {
+                remotePath = remoteDirectory + QLatin1Char('/') + fileName;
+                snapshot.insert(QStringLiteral("remotePath"), remotePath);
+            }
+            if (fileName.isEmpty() || !fileName.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+                continue;
+            }
+
+            const QString fileKey = fileName.toCaseFolded();
+            if (seenFileNames.contains(fileKey)) {
+                continue;
+            }
+            seenFileNames.insert(fileKey);
+            mergedSnapshots.append(snapshot);
+        }
+
+        const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+        QJsonArray content = data.value(QStringLiteral("content")).toArray();
+        if (content.isEmpty()) {
+            content = data.value(QStringLiteral("items")).toArray();
+        }
+
+        for (const QJsonValue &value : content) {
+            const QJsonObject item = value.toObject();
+            QString fileName = item.value(QStringLiteral("name")).toString().trimmed();
+            if (fileName.isEmpty()) {
+                fileName = item.value(QStringLiteral("filename")).toString().trimmed();
+            }
+            if (!fileName.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+                continue;
+            }
+
+            const QString fileKey = fileName.toCaseFolded();
+            if (seenFileNames.contains(fileKey)) {
+                continue;
+            }
+            seenFileNames.insert(fileKey);
+
+            QJsonObject snapshot;
+            snapshot.insert(QStringLiteral("fileName"), fileName);
+            snapshot.insert(QStringLiteral("remotePath"), remoteDirectory + QLatin1Char('/') + fileName);
+            snapshot.insert(QStringLiteral("uploadState"), QStringLiteral("cloud_directory_listing"));
+            snapshot.insert(QStringLiteral("remoteVerifiedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+            const QJsonValue sizeValue = item.value(QStringLiteral("size"));
+            if (sizeValue.isDouble()) {
+                snapshot.insert(QStringLiteral("zipSize"), QString::number(static_cast<qint64>(sizeValue.toDouble())));
+            }
+            mergedSnapshots.append(snapshot);
+        }
+
+        std::sort(mergedSnapshots.begin(), mergedSnapshots.end(), [](const QJsonObject &left, const QJsonObject &right) {
+            return left.value(QStringLiteral("fileName")).toString()
+                > right.value(QStringLiteral("fileName")).toString();
+        });
+
+        QJsonArray snapshots;
+        for (const QJsonObject &snapshot : mergedSnapshots) {
+            snapshots.append(snapshot);
+        }
+
+        manifest.insert(QStringLiteral("remoteDirectory"), remoteDirectory);
+        manifest.insert(QStringLiteral("updatedAtUtc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+        manifest.insert(QStringLiteral("snapshotCount"), snapshots.count());
+        manifest.insert(QStringLiteral("snapshots"), snapshots);
+        if (!mergedSnapshots.isEmpty()) {
+            const QJsonObject latest = mergedSnapshots.first();
+            manifest.insert(QStringLiteral("latestSnapshotFileName"), latest.value(QStringLiteral("fileName")).toString());
+            manifest.insert(QStringLiteral("latestRemotePath"), latest.value(QStringLiteral("remotePath")).toString());
+        }
+
+        emit dataFileDownloadFinished(true,
+                                      cleanManifestPath,
+                                      operationId,
+                                      QJsonDocument(manifest).toJson(QJsonDocument::Compact),
+                                      QStringLiteral("%1，并已合并云端目录中的 %2 个 zip 快照")
+                                          .arg(readMessage)
+                                          .arg(snapshots.count()));
     });
 }
 
