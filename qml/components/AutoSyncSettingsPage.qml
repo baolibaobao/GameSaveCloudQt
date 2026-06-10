@@ -22,6 +22,10 @@ ColumnLayout {
                 : false
     }
 
+    function recentResultText(status) {
+        return status && status.length > 0 ? status : "暂无自动同步记录"
+    }
+
     RowLayout {
         Layout.fillWidth: true
         spacing: 16
@@ -95,7 +99,7 @@ ColumnLayout {
                 }
 
                 Text {
-                    text: "这是软件级总开关。开启后，才可以为每个游戏单独设置是否参与自动同步。"
+                    text: "这是总开关。开启后，才可以为每个游戏单独设置是否参与自动同步。"
                     color: control.mutedTextColor
                     font.pixelSize: 13
                     wrapMode: Text.WordWrap
@@ -230,7 +234,7 @@ ColumnLayout {
 
                     delegate: Rectangle {
                         width: ListView.view.width
-                        height: 66
+                        height: 82
                         radius: 16
                         color: control.darkMode ? "#1E293B" : "#FFFFFF"
                         border.width: 1
@@ -244,20 +248,52 @@ ColumnLayout {
 
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                spacing: 3
+                                spacing: 4
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: displayName
+                                        color: control.textColor
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Rectangle {
+                                        Layout.preferredWidth: autoSyncStateText.implicitWidth + 16
+                                        Layout.preferredHeight: 22
+                                        radius: 11
+                                        color: control.gameAutoSyncEnabled(appId)
+                                               ? (control.darkMode ? "#1E4732" : "#DCFCE7")
+                                               : (control.darkMode ? "#263244" : "#E8EEF7")
+                                        border.width: 1
+                                        border.color: control.gameAutoSyncEnabled(appId) ? "#86EFAC" : "#CBD5E1"
+
+                                        Text {
+                                            id: autoSyncStateText
+                                            anchors.centerIn: parent
+                                            text: control.gameAutoSyncEnabled(appId) ? "已开启" : "已关闭"
+                                            color: control.gameAutoSyncEnabled(appId) ? "#16A34A" : "#64748B"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+                                    }
+                                }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: displayName
-                                    color: control.textColor
-                                    font.pixelSize: 14
-                                    font.bold: true
+                                    text: "AppID " + appId
+                                    color: control.mutedTextColor
+                                    font.pixelSize: 12
                                     elide: Text.ElideRight
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: "AppID " + appId + " · " + (syncStatus && syncStatus.length > 0 ? syncStatus : "未同步")
+                                    text: "最近结果：" + control.recentResultText(syncStatus)
                                     color: control.mutedTextColor
                                     font.pixelSize: 12
                                     elide: Text.ElideRight

@@ -2011,7 +2011,7 @@ void SteamManager::handleSnapshotUploadFinished(
         applySnapshotResult(appId, failed);
         m_logger.error(QStringLiteral("快照云端同步失败：%1，原因：%2").arg(game.displayName, message));
         if (isAutoSyncUpload) {
-            updateSyncStatusForGame(appId, QStringLiteral("自动同步失败：快照已创建，但云端上传失败"));
+            updateSyncStatusForGame(appId, QStringLiteral("自动同步失败：已保留本地快照，云端上传失败，可稍后手动上传"));
             m_logger.error(QStringLiteral("自动同步云端上传失败：%1，原因：%2").arg(game.displayName, message));
             if (remoteFilePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)
                 && isQuarkAuthFailureMessage(message)) {
@@ -2023,6 +2023,12 @@ void SteamManager::handleSnapshotUploadFinished(
                     QStringLiteral("自动同步未上传云端"),
                     QStringLiteral("%1 的本地快照已创建，但云端连接尚未就绪。").arg(game.displayName),
                     QStringLiteral("本地 zip 快照已经保留。请进入“云同步设置”确认夸克网关连接成功后，再手动上传该快照。失败原因：%1").arg(message),
+                    false);
+            } else {
+                emit userAlertRequested(
+                    QStringLiteral("自动同步上传失败"),
+                    QStringLiteral("%1 的本地快照已创建，但没有上传到云端。").arg(game.displayName),
+                    QStringLiteral("本地 zip 快照已经保留，可以稍后在游戏详情页点击“上传全部”手动补传。失败原因：%1").arg(message),
                     false);
             }
         }
@@ -2747,7 +2753,7 @@ bool SteamManager::uploadAutoSyncSnapshotForGame(const GameInfo &game, const QVa
     }
 
     if (!m_webDavConfig.isValid()) {
-        updateSyncStatusForGame(game.appId, QStringLiteral("自动同步失败：云端未连接，快照只保存在本地"));
+        updateSyncStatusForGame(game.appId, QStringLiteral("自动同步失败：已保留本地快照，云端未连接，可稍后手动上传"));
         refreshSnapshotRecordsForGame(
             game.appId,
             QStringLiteral("自动同步已创建本地快照，但云端未连接"),
@@ -3503,13 +3509,11 @@ void SteamManager::handleGameClosedForAutoSync(const QString &appId, const QStri
 
     if (!m_autoSyncEnabled) {
         updateSyncStatusForGame(appId, QStringLiteral("自动同步已关闭"));
-        m_logger.info(QStringLiteral("自动同步跳过：全局自动同步未启用，游戏：%1").arg(game.displayName));
         return;
     }
 
     if (!autoSyncEnabledForGame(appId)) {
         updateSyncStatusForGame(appId, QStringLiteral("自动同步已对该游戏关闭"));
-        m_logger.info(QStringLiteral("自动同步跳过：该游戏未启用自动同步，游戏：%1").arg(game.displayName));
         return;
     }
 

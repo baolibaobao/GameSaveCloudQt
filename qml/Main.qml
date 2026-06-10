@@ -72,6 +72,25 @@ ApplicationWindow {
                     || status.indexOf("可能已过期") >= 0
                     || status.indexOf("鉴权异常") >= 0);
     }
+    function autoSyncActiveForGame(appId) {
+        root.autoSyncRevision;
+        if (!steamManager || !steamManager.autoSyncEnabled || !appId || appId.length === 0) {
+            return false;
+        }
+        return steamManager.autoSyncEnabledForGame(appId);
+    }
+    function autoSyncBadgeText(appId) {
+        return root.autoSyncActiveForGame(appId) ? "自动同步开" : "自动同步关";
+    }
+    function autoSyncBadgeBackground(appId) {
+        return root.autoSyncActiveForGame(appId) ? (root.darkMode ? "#1E4732" : "#DCFCE7") : (root.darkMode ? "#263244" : "#E8EEF7");
+    }
+    function autoSyncBadgeTextColor(appId) {
+        return root.autoSyncActiveForGame(appId) ? "#16A34A" : "#64748B";
+    }
+    function autoSyncResultText(status) {
+        return "最近结果：" + (status && status.length > 0 ? status : "未同步");
+    }
     function runningBrief(status) {
         return status && status.indexOf("正在运行") >= 0 ? "运行中" : "未运行";
     }
@@ -1304,6 +1323,29 @@ ApplicationWindow {
                                                         font.bold: true
                                                     }
                                                 }
+
+                                                Rectangle {
+                                                    anchors.top: parent.top
+                                                    anchors.left: parent.left
+                                                    anchors.topMargin: 10
+                                                    anchors.leftMargin: 10
+                                                    width: autoSyncCardBadgeLabel.implicitWidth + 18
+                                                    height: 24
+                                                    radius: 13
+                                                    color: root.autoSyncBadgeBackground(appId)
+                                                    border.width: 1
+                                                    border.color: root.autoSyncActiveForGame(appId) ? "#86EFAC" : "#CBD5E1"
+
+                                                    Text {
+                                                        id: autoSyncCardBadgeLabel
+                                                        anchors.centerIn: parent
+                                                        text: root.autoSyncBadgeText(appId)
+                                                        color: root.autoSyncBadgeTextColor(appId)
+                                                        font.family: root.appFontFamily
+                                                        font.pixelSize: 11
+                                                        font.bold: true
+                                                    }
+                                                }
                                             }
 
                                             Rectangle {
@@ -1545,19 +1587,46 @@ ApplicationWindow {
                                                 Layout.fillHeight: true
                                             }
 
-                                            Rectangle {
-                                                Layout.preferredWidth: heroRunningText.implicitWidth + 22
-                                                Layout.preferredHeight: 28
-                                                radius: 14
-                                                color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#DCFCE7" : "#E8EEF7"
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 8
 
-                                                Text {
-                                                    id: heroRunningText
-                                                    anchors.centerIn: parent
-                                                    text: root.runningBrief(root.selectedGameValue("runningStatus", "等待进程监控"))
-                                                    color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#16A34A" : "#64748B"
-                                                    font.pixelSize: 12
-                                                    font.bold: true
+                                                Rectangle {
+                                                    Layout.preferredWidth: heroRunningText.implicitWidth + 22
+                                                    Layout.preferredHeight: 28
+                                                    radius: 14
+                                                    color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#DCFCE7" : "#E8EEF7"
+
+                                                    Text {
+                                                        id: heroRunningText
+                                                        anchors.centerIn: parent
+                                                        text: root.runningBrief(root.selectedGameValue("runningStatus", "等待进程监控"))
+                                                        color: root.runningBrief(root.selectedGameValue("runningStatus", "")) === "运行中" ? "#16A34A" : "#64748B"
+                                                        font.pixelSize: 12
+                                                        font.bold: true
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    Layout.preferredWidth: heroAutoSyncText.implicitWidth + 22
+                                                    Layout.preferredHeight: 28
+                                                    radius: 14
+                                                    color: root.autoSyncBadgeBackground(root.selectedGameValue("appId", ""))
+                                                    border.width: 1
+                                                    border.color: root.autoSyncActiveForGame(root.selectedGameValue("appId", "")) ? "#86EFAC" : "#CBD5E1"
+
+                                                    Text {
+                                                        id: heroAutoSyncText
+                                                        anchors.centerIn: parent
+                                                        text: root.autoSyncBadgeText(root.selectedGameValue("appId", ""))
+                                                        color: root.autoSyncBadgeTextColor(root.selectedGameValue("appId", ""))
+                                                        font.pixelSize: 12
+                                                        font.bold: true
+                                                    }
+                                                }
+
+                                                Item {
+                                                    Layout.fillWidth: true
                                                 }
                                             }
                                         }
@@ -1878,7 +1947,7 @@ ApplicationWindow {
 
                                                 Rectangle {
                                                     Layout.fillWidth: true
-                                                    Layout.preferredHeight: 178
+                                                    Layout.preferredHeight: 212
                                                     radius: 18
                                                     color: root.cardColor
                                                     border.width: 1
@@ -1912,6 +1981,11 @@ ApplicationWindow {
                                                                     title: "存档路径",
                                                                     detail: root.selectedGameValue("savePath", "").length > 0 ? root.selectedGameValue("savePath", "") : "尚未获得存档目录，自动识别失败时可以在设置页手动指定。",
                                                                     color: root.selectedGameValue("savePath", "").length > 0 ? "#22C55E" : "#F59E0B"
+                                                                },
+                                                                {
+                                                                    title: "自动同步",
+                                                                    detail: root.autoSyncResultText(root.selectedGameValue("syncStatus", "未同步")),
+                                                                    color: root.autoSyncActiveForGame(root.selectedGameValue("appId", "")) ? "#16A34A" : "#94A3B8"
                                                                 },
                                                                 {
                                                                     title: "处理状态",
