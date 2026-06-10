@@ -36,6 +36,23 @@ void SavePathResolver::setSteamPath(const QString &steamPath)
     m_steamPath = QDir::cleanPath(steamPath);
 }
 
+bool SavePathResolver::applyManualSavePath(GameInfo &game) const
+{
+    const QString manualPath = m_settingsManager.manualSavePathForApp(game.appId);
+    if (manualPath.isEmpty()) {
+        return false;
+    }
+
+    const SavePathValidator::Result validation = m_savePathValidator.validate(manualPath, game.appId, m_steamPath);
+    game.savePath = manualPath;
+    game.savePathStatus = QStringLiteral("已手动指定位置");
+    game.savePathSource = QStringLiteral("用户指定");
+    game.savePathAvailability = validation.availability;
+    game.savePathDetail = validation.detail;
+    game.savePathCanSync = validation.canSync;
+    return true;
+}
+
 void SavePathResolver::resolveGameSavePath(const GameInfo &game)
 {
     if (game.appId.trimmed().isEmpty()) {

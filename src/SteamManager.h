@@ -12,6 +12,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include "cache/GameMetadataCache.h"
 #include "logging/AppLogger.h"
 #include "manual/GameIdentityResolver.h"
 #include "manual/ManualGameManager.h"
@@ -72,6 +73,7 @@ public:
 
     Q_INVOKABLE QString findSteamPath();
     Q_INVOKABLE QVariantList getInstalledGames();
+    Q_INVOKABLE void loadInstalledGames();
     Q_INVOKABLE void refreshInstalledGames();
     Q_INVOKABLE bool setManualSavePath(const QString &appId, const QUrl &folderUrl);
     Q_INVOKABLE bool addManualGameFromExecutable(const QUrl &executableUrl);
@@ -100,6 +102,7 @@ public:
     Q_INVOKABLE QVariantList cloudSnapshotsForGame(const QString &appId) const;
     Q_INVOKABLE void clearVisibleLogs();
     Q_INVOKABLE bool openLogDirectory() const;
+    Q_INVOKABLE bool openGameDataCacheDirectory();
     Q_INVOKABLE bool openSavePathForGame(const QString &appId);
     Q_INVOKABLE bool openSnapshotDirectoryForGame(const QString &appId);
     Q_INVOKABLE bool saveWebDavSettings(
@@ -149,6 +152,9 @@ private:
     void upsertGameAndRebuild(const GameInfo &game, const QString &oldAppId = {});
     void persistManualGameIfPresent(const QString &appId);
     bool shouldHideSteamApp(const GameInfo &game) const;
+    QVariantList scanInstalledGames(bool forceNetworkRefresh);
+    void applyManualSavePaths(QList<GameInfo> &games);
+    bool saveGameMetadataCacheForApp(const QString &appId);
     void requestMetadataForGames(const QList<GameInfo> &games);
     void resolveSavePathsForGames(const QList<GameInfo> &games);
     void rebuildInstalledGamesFromModel();
@@ -251,6 +257,7 @@ private:
     QString m_steamPath;
     QVariantList m_installedGames;
     GameListModel m_gameModel;
+    GameMetadataCache m_gameMetadataCache;
     SteamMetadataClient m_metadataClient;
     SavePathResolver m_savePathResolver;
     GameProcessMonitor m_processMonitor;

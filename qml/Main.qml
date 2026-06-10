@@ -347,7 +347,7 @@ ApplicationWindow {
         }
         return hovered ? (root.darkMode ? "#334155" : "#D8E4F2") : "transparent";
     }
-    Component.onCompleted: steamManager.refreshInstalledGames()
+    Component.onCompleted: steamManager.loadInstalledGames()
 
     FolderDialog {
         id: savePathDialog
@@ -738,84 +738,6 @@ ApplicationWindow {
                                 }
                             }
 
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 46
-                                Layout.leftMargin: 6
-                                Layout.rightMargin: 6
-                                radius: 23
-                                color: refreshArea.containsMouse ? (root.darkMode ? "#2A3448" : "#EEF5FC") : "transparent"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "刷新扫描"
-                                    color: refreshArea.containsMouse ? root.accentColor : root.textColor
-                                    font.family: root.appFontFamily
-                                    font.pixelSize: 15
-                                    font.bold: true
-                                }
-
-                                MouseArea {
-                                    id: refreshArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: steamManager.refreshInstalledGames()
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 46
-                                Layout.leftMargin: 6
-                                Layout.rightMargin: 6
-                                radius: 23
-                                color: addGameArea.containsMouse ? (root.darkMode ? "#2A3448" : "#EEF5FC") : "transparent"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "添加游戏"
-                                    color: addGameArea.containsMouse ? root.accentColor : root.textColor
-                                    font.family: root.appFontFamily
-                                    font.pixelSize: 15
-                                    font.bold: true
-                                }
-
-                                MouseArea {
-                                    id: addGameArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: gameExecutableDialog.open()
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 46
-                                Layout.leftMargin: 6
-                                Layout.rightMargin: 6
-                                radius: 23
-                                color: snapshotRootArea.containsMouse ? (root.darkMode ? "#2A3448" : "#EEF5FC") : "transparent"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "设置存档目录"
-                                    color: snapshotRootArea.containsMouse ? root.accentColor : root.textColor
-                                    font.family: root.appFontFamily
-                                    font.pixelSize: 15
-                                    font.bold: true
-                                }
-
-                                MouseArea {
-                                    id: snapshotRootArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: snapshotRootDialog.open()
-                                }
-                            }
-
                             Item {
                                 Layout.fillHeight: true
                             }
@@ -872,6 +794,7 @@ ApplicationWindow {
 
                                         ColumnLayout {
                                             Layout.fillWidth: true
+                                            Layout.alignment: Qt.AlignVCenter
                                             spacing: 6
 
                                             Text {
@@ -881,16 +804,12 @@ ApplicationWindow {
                                                 font.bold: true
                                             }
 
-                                            Text {
-                                                text: steamManager.gameModel.count + " 个游戏 · 点击卡片进入详情"
-                                                color: root.mutedTextColor
-                                                font.pixelSize: 14
-                                            }
                                         }
 
                                         Rectangle {
                                             Layout.preferredWidth: 132
                                             Layout.preferredHeight: 42
+                                            Layout.alignment: Qt.AlignVCenter
                                             radius: 14
                                             color: gridScanArea.containsMouse ? "#006CBE" : root.accentColor
 
@@ -914,6 +833,7 @@ ApplicationWindow {
                                         Rectangle {
                                             Layout.preferredWidth: 132
                                             Layout.preferredHeight: 42
+                                            Layout.alignment: Qt.AlignVCenter
                                             radius: 14
                                             color: gridAddGameArea.containsMouse ? (root.darkMode ? "#2A3448" : "#E5F2FF") : (root.darkMode ? "#222B3C" : "#EEF5FC")
                                             border.width: 1
@@ -939,6 +859,7 @@ ApplicationWindow {
                                         Rectangle {
                                             Layout.preferredWidth: 154
                                             Layout.preferredHeight: 42
+                                            Layout.alignment: Qt.AlignVCenter
                                             radius: 14
                                             color: gridSnapshotArea.containsMouse ? (root.darkMode ? "#2A3448" : "#E5F2FF") : (root.darkMode ? "#222B3C" : "#EEF5FC")
                                             border.width: 1
@@ -958,6 +879,32 @@ ApplicationWindow {
                                                 hoverEnabled: true
                                                 cursorShape: Qt.PointingHandCursor
                                                 onClicked: snapshotRootDialog.open()
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.preferredWidth: 178
+                                            Layout.preferredHeight: 42
+                                            Layout.alignment: Qt.AlignVCenter
+                                            radius: 14
+                                            color: gridCacheArea.containsMouse ? (root.darkMode ? "#2A3448" : "#E5F2FF") : (root.darkMode ? "#222B3C" : "#EEF5FC")
+                                            border.width: 1
+                                            border.color: gridCacheArea.containsMouse ? root.accentColor : (root.darkMode ? "#334155" : "#D8E4F2")
+
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "打开缓存目录"
+                                                color: gridCacheArea.containsMouse ? root.accentColor : root.textColor
+                                                font.pixelSize: 14
+                                                font.bold: true
+                                            }
+
+                                            MouseArea {
+                                                id: gridCacheArea
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: steamManager.openGameDataCacheDirectory()
                                             }
                                         }
                                     }

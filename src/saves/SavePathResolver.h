@@ -17,6 +17,7 @@ public:
     explicit SavePathResolver(QObject *parent = nullptr);
 
     void setSteamPath(const QString &steamPath);
+    bool applyManualSavePath(GameInfo &game) const;
     void resolveGameSavePath(const GameInfo &game);
     bool setManualSavePath(const QString &appId, const QString &path);
 

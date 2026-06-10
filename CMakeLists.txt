@@ -17,6 +17,8 @@ qt_add_executable(GameSaveCloudQt
     assets/app.rc
     assets/resources.qrc
     src/main.cpp
+    src/cache/GameMetadataCache.h
+    src/cache/GameMetadataCache.cpp
     src/logging/AppLogger.h
     src/logging/AppLogger.cpp
     src/manual/GameIdentityResolver.h

@@ -43,6 +43,7 @@ SteamManager::SteamManager(QObject *parent)
                 if (m_gameModel.updateMetadata(appId, metadata)) {
                     persistManualGameIfPresent(appId);
                     rebuildInstalledGamesFromModel();
+                    saveGameMetadataCacheForApp(appId);
                 }
             });
 
@@ -81,11 +82,19 @@ SteamManager::SteamManager(QObject *parent)
                     }
                     persistManualGameIfPresent(appId);
                     rebuildInstalledGamesFromModel();
+                    saveGameMetadataCacheForApp(appId);
                 }
             });
 
     connect(&m_savePathResolver, &SavePathResolver::savePathNeedsManual, this,
             [this](const QString &appId, const QString &reason) {
+                const GameInfo currentGame = gameByAppId(appId);
+                if (!currentGame.savePath.trimmed().isEmpty()) {
+                    m_logger.info(QStringLiteral("保留已有游戏数据缓存中的存档路径：AppID %1，路径：%2")
+                                      .arg(appId, currentGame.savePath));
+                    return;
+                }
+
                 m_logger.warning(QStringLiteral("数据库未获取到存档位置，需要用户手动指定：AppID %1，原因：%2").arg(appId, reason));
                 if (m_gameModel.updateSavePath(
                         appId,
@@ -458,7 +467,7 @@ QString SteamManager::findSteamPath()
     return m_steamPath;
 }
 
-QVariantList SteamManager::getInstalledGames()
+QVariantList SteamManager::scanInstalledGames(bool forceNetworkRefresh)
 {
     const QString steamRootPath = m_steamPath.isEmpty() ? findSteamPath() : m_steamPath;
     QList<GameInfo> scannedGames;
@@ -507,6 +516,10 @@ QVariantList SteamManager::getInstalledGames()
         return QString::localeAwareCompare(left.name, right.name) < 0;
     });
 
+    m_gameMetadataCache.reload();
+    const int cachedCount = m_gameMetadataCache.applyToGames(scannedGames);
+    applyManualSavePaths(scannedGames);
+
     m_gameModel.setGames(scannedGames);
     applyCloudSnapshotRecordsToModel();
     rebuildInstalledGamesFromModel();
@@ -518,16 +531,32 @@ QVariantList SteamManager::getInstalledGames()
         m_logger.info(QStringLiteral("游戏进程监控正常运行，当前未检测到正在运行的游戏"));
         m_hasLoggedProcessMonitorIdle = true;
     }
-    requestMetadataForGames(scannedGames);
-    resolveSavePathsForGames(scannedGames);
+    if (forceNetworkRefresh) {
+        requestMetadataForGames(scannedGames);
+        resolveSavePathsForGames(scannedGames);
+        m_logger.info(QStringLiteral("已触发重新扫描：正在刷新 Steam 元数据和 PCGamingWiki 存档路径"));
+    } else {
+        m_logger.info(QStringLiteral("启动扫描已使用本地游戏数据缓存：命中 %1 个游戏，需要联网更新时请点击重新扫描")
+                          .arg(cachedCount));
+    }
     m_logger.info(QStringLiteral("游戏扫描完成：共发现 %1 个游戏，其中包含 Steam 库游戏和已保存的手动添加游戏").arg(scannedGames.count()));
 
     return m_installedGames;
 }
 
+QVariantList SteamManager::getInstalledGames()
+{
+    return scanInstalledGames(false);
+}
+
+void SteamManager::loadInstalledGames()
+{
+    scanInstalledGames(false);
+}
+
 void SteamManager::refreshInstalledGames()
 {
-    getInstalledGames();
+    scanInstalledGames(true);
 }
 
 bool SteamManager::setManualSavePath(const QString &appId, const QUrl &folderUrl)
@@ -1336,6 +1365,27 @@ bool SteamManager::openLogDirectory() const
     return m_logger.openLogDirectory();
 }
 
+bool SteamManager::openGameDataCacheDirectory()
+{
+    QDir cacheDir(m_gameMetadataCache.cacheDirectoryPath());
+    if (!cacheDir.exists() && !cacheDir.mkpath(QStringLiteral("."))) {
+        m_logger.warning(QStringLiteral("打开游戏数据缓存目录失败：无法创建目录 %1")
+                             .arg(QDir::toNativeSeparators(cacheDir.absolutePath())));
+        return false;
+    }
+
+    const bool opened = QDesktopServices::openUrl(QUrl::fromLocalFile(cacheDir.absolutePath()));
+    if (opened) {
+        m_logger.info(QStringLiteral("已打开游戏数据缓存目录：%1")
+                          .arg(QDir::toNativeSeparators(cacheDir.absolutePath())));
+    } else {
+        m_logger.warning(QStringLiteral("打开游戏数据缓存目录失败：%1")
+                             .arg(QDir::toNativeSeparators(cacheDir.absolutePath())));
+    }
+
+    return opened;
+}
+
 bool SteamManager::openSavePathForGame(const QString &appId)
 {
     const GameInfo game = gameByAppId(appId);
@@ -1865,6 +1915,24 @@ bool SteamManager::shouldHideSteamApp(const GameInfo &game) const
     return game.appId == QStringLiteral("228980")
         || game.name.compare(QStringLiteral("Steamworks Common Redistributables"), Qt::CaseInsensitive) == 0
         || game.displayName.compare(QStringLiteral("Steamworks Common Redistributables"), Qt::CaseInsensitive) == 0;
+}
+
+void SteamManager::applyManualSavePaths(QList<GameInfo> &games)
+{
+    m_savePathResolver.setSteamPath(m_steamPath);
+    for (GameInfo &game : games) {
+        m_savePathResolver.applyManualSavePath(game);
+    }
+}
+
+bool SteamManager::saveGameMetadataCacheForApp(const QString &appId)
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return false;
+    }
+
+    return m_gameMetadataCache.saveGame(game);
 }
 
 void SteamManager::requestMetadataForGames(const QList<GameInfo> &games)
