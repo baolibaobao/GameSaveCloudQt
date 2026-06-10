@@ -475,7 +475,7 @@ QVariantList SteamManager::getInstalledGames()
             GameInfo game = parseAcfFile(steamAppsDir.absoluteFilePath(manifestFile));
             const QString appId = game.appId;
 
-            if (appId.isEmpty() || seenAppIds.contains(appId)) {
+            if (appId.isEmpty() || seenAppIds.contains(appId) || shouldHideSteamApp(game)) {
                 continue;
             }
 
@@ -676,6 +676,185 @@ bool SteamManager::deleteLocalSnapshotsForGame(const QString &appId)
      */
     refreshSnapshotRecordsForGame(appId, status, detail, result.value(QStringLiteral("needsSnapshot")).toBool());
     return result.value(QStringLiteral("success")).toBool();
+}
+
+bool SteamManager::restoreLocalSnapshotForGame(const QString &appId, const QString &snapshotPathOrFileName)
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return false;
+    }
+
+    if (!game.savePathCanSync || game.savePath.trimmed().isEmpty()) {
+        m_logger.warning(QStringLiteral("快照恢复失败：%1 当前没有可恢复的本地存档目录").arg(game.displayName));
+        return false;
+    }
+
+    if (m_processMonitor.isGameRunning(appId)) {
+        m_logger.warning(QStringLiteral("快照恢复已阻止：%1 正在运行，请先关闭游戏后再恢复存档").arg(game.displayName));
+        refreshSnapshotRecordsForGame(
+            appId,
+            QStringLiteral("快照恢复已阻止"),
+            QStringLiteral("检测到游戏进程仍在运行。为了避免存档被游戏重新写入或损坏，请先关闭游戏后再恢复快照"),
+            false);
+        return false;
+    }
+
+    const QString selector = snapshotPathOrFileName.trimmed();
+    if (selector.isEmpty()) {
+        m_logger.warning(QStringLiteral("快照恢复失败：%1 未选择本地 zip 快照").arg(game.displayName));
+        return false;
+    }
+
+    QString selectedZipPath;
+    QString selectedFileName;
+    const QVariantList snapshots = m_snapshotPreprocessor.snapshotsForGame(game);
+    for (const QVariant &item : snapshots) {
+        const QVariantMap snapshot = item.toMap();
+        const QString zipPath = snapshot.value(QStringLiteral("zipPath")).toString();
+        const QString fileName = snapshot.value(QStringLiteral("fileName")).toString();
+        if (zipPath == selector || fileName == selector) {
+            selectedZipPath = zipPath;
+            selectedFileName = fileName;
+            break;
+        }
+    }
+
+    if (selectedZipPath.trimmed().isEmpty()) {
+        m_logger.warning(QStringLiteral("快照恢复失败：%1 的本地快照列表中未找到 %2").arg(game.displayName, selector));
+        refreshLocalSnapshotsForGame(appId);
+        return false;
+    }
+
+    const QString storageRootPath = storageRootFromSnapshotRoot(snapshotRootPath());
+    const QString backupRootPath = QDir(storageRootPath).absoluteFilePath(QStringLiteral("恢复前备份"));
+    m_logger.info(QStringLiteral("开始恢复本地快照：%1，快照：%2，目标存档目录：%3")
+                      .arg(game.displayName,
+                           QDir::toNativeSeparators(selectedZipPath),
+                           QDir::toNativeSeparators(game.savePath)));
+
+    const QVariantMap result = m_snapshotRestoreManager.restoreSnapshot(game, selectedZipPath, backupRootPath);
+    const QString status = result.value(QStringLiteral("status")).toString();
+    const QString detail = result.value(QStringLiteral("detail")).toString();
+    const QString backupPath = result.value(QStringLiteral("backupPath")).toString();
+    const bool success = result.value(QStringLiteral("success")).toBool();
+
+    refreshSnapshotRecordsForGame(
+        appId,
+        status,
+        backupPath.trimmed().isEmpty()
+            ? detail
+            : QStringLiteral("%1；恢复前备份：%2").arg(detail, QDir::toNativeSeparators(backupPath)),
+        false);
+
+    if (success) {
+        m_logger.info(QStringLiteral("本地快照恢复完成：%1，快照：%2，恢复前备份：%3")
+                          .arg(game.displayName,
+                               selectedFileName.isEmpty() ? QFileInfo(selectedZipPath).fileName() : selectedFileName,
+                               QDir::toNativeSeparators(backupPath)));
+    } else {
+        m_logger.error(QStringLiteral("本地快照恢复失败：%1，快照：%2，原因：%3")
+                           .arg(game.displayName,
+                                selectedFileName.isEmpty() ? selector : selectedFileName,
+                                detail));
+    }
+
+    return success;
+}
+
+bool SteamManager::restoreCloudSnapshotForGame(const QString &appId, const QString &snapshotFileNameOrRemotePath)
+{
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return false;
+    }
+
+    if (!m_webDavConfig.isValid()) {
+        m_logger.warning(QStringLiteral("云端快照恢复失败：夸克网盘尚未连接成功"));
+        return false;
+    }
+
+    if (!game.savePathCanSync || game.savePath.trimmed().isEmpty()) {
+        m_logger.warning(QStringLiteral("云端快照恢复失败：%1 当前没有可恢复的本地存档目录").arg(game.displayName));
+        return false;
+    }
+
+    if (m_processMonitor.isGameRunning(appId)) {
+        m_logger.warning(QStringLiteral("云端快照恢复已阻止：%1 正在运行，请先关闭游戏后再恢复存档").arg(game.displayName));
+        refreshSnapshotRecordsForGame(
+            appId,
+            QStringLiteral("云端快照恢复已阻止"),
+            QStringLiteral("检测到游戏进程仍在运行。为了避免存档被游戏重新写入或损坏，请先关闭游戏后再恢复云端快照"),
+            false);
+        return false;
+    }
+
+    const QString selector = snapshotFileNameOrRemotePath.trimmed();
+    if (selector.isEmpty()) {
+        m_logger.warning(QStringLiteral("云端快照恢复失败：%1 未选择云端快照").arg(game.displayName));
+        return false;
+    }
+
+    const QVariantList snapshots = downloadableSnapshotRecordsForGame(game);
+    for (const QVariant &item : snapshots) {
+        QVariantMap snapshot = item.toMap();
+        const QString fileName = snapshot.value(QStringLiteral("fileName")).toString().trimmed();
+        QString remotePath = snapshot.value(QStringLiteral("remotePath")).toString().trimmed();
+        if (fileName != selector && remotePath != selector) {
+            continue;
+        }
+
+        if (remotePath.isEmpty()) {
+            remotePath = cloudDirectoryForGame(game) + QLatin1Char('/') + fileName;
+        }
+        const QString localPath = localDownloadPathForSnapshot(game, fileName);
+        if (fileName.isEmpty() || remotePath.isEmpty() || localPath.trimmed().isEmpty()) {
+            m_logger.warning(QStringLiteral("云端快照恢复失败：%1 的云端快照记录不完整").arg(game.displayName));
+            return false;
+        }
+
+        snapshot.insert(QStringLiteral("remotePath"), remotePath);
+
+        if (QFileInfo::exists(localPath)) {
+            m_snapshotPreprocessor.importCloudSnapshotRecord(game, snapshot, localPath);
+            m_logger.info(QStringLiteral("云端快照恢复：%1 的快照本地已存在，将直接恢复，文件：%2")
+                              .arg(game.displayName, QDir::toNativeSeparators(localPath)));
+            return restoreLocalSnapshotForGame(appId, localPath);
+        }
+
+        if (m_pendingSnapshotDownloadAppIds.contains(localPath)) {
+            m_pendingSnapshotRestoreDownloadPaths.insert(localPath);
+            m_logger.info(QStringLiteral("云端快照恢复等待下载完成：%1，快照：%2，本地路径：%3")
+                              .arg(game.displayName, fileName, QDir::toNativeSeparators(localPath)));
+            refreshSnapshotRecordsForGame(
+                appId,
+                QStringLiteral("云端快照正在下载，完成后将自动恢复"),
+                QStringLiteral("所选云端快照已在下载队列中，下载成功后会先备份当前存档，再自动恢复该版本"),
+                false);
+            return true;
+        }
+
+        m_pendingSnapshotDownloadAppIds.insert(localPath, appId);
+        m_pendingSnapshotDownloadRecords.insert(localPath, snapshot);
+        m_pendingSnapshotRestoreDownloadPaths.insert(localPath);
+        m_logger.info(QStringLiteral("开始下载并恢复云端快照：%1，文件：%2，云端路径：%3，本地路径：%4")
+                          .arg(game.displayName, fileName, remotePath, QDir::toNativeSeparators(localPath)));
+        refreshSnapshotRecordsForGame(
+            appId,
+            QStringLiteral("正在下载云端快照，完成后将自动恢复"),
+            QStringLiteral("所选云端快照本地尚不存在，软件会先下载 zip，再备份当前存档并恢复该版本"),
+            false);
+
+        if (remotePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
+            m_quarkGatewayManager.downloadFile(remotePath, localPath);
+        } else {
+            m_webDavClient.downloadFile(m_webDavConfig, remotePath, localPath);
+        }
+        return true;
+    }
+
+    m_logger.warning(QStringLiteral("云端快照恢复失败：%1 未找到所选云端快照 %2").arg(game.displayName, selector));
+    return false;
 }
 
 bool SteamManager::uploadLatestSnapshotForGame(const QString &appId)
@@ -1412,6 +1591,13 @@ void SteamManager::persistManualGameIfPresent(const QString &appId)
     }
 }
 
+bool SteamManager::shouldHideSteamApp(const GameInfo &game) const
+{
+    return game.appId == QStringLiteral("228980")
+        || game.name.compare(QStringLiteral("Steamworks Common Redistributables"), Qt::CaseInsensitive) == 0
+        || game.displayName.compare(QStringLiteral("Steamworks Common Redistributables"), Qt::CaseInsensitive) == 0;
+}
+
 void SteamManager::requestMetadataForGames(const QList<GameInfo> &games)
 {
     for (const GameInfo &game : games) {
@@ -1629,7 +1815,9 @@ void SteamManager::handleSnapshotDownloadFinished(
 {
     const QString appId = m_pendingSnapshotDownloadAppIds.take(localFilePath);
     const QVariantMap cloudRecord = m_pendingSnapshotDownloadRecords.take(localFilePath);
+    const bool shouldRestoreAfterDownload = m_pendingSnapshotRestoreDownloadPaths.remove(localFilePath) > 0;
     const GameInfo game = gameByAppId(appId);
+    const bool isBatchDownload = m_pendingSnapshotDownloadRemainingByAppId.value(appId, 0) > 0;
 
     if (!game.isValid()) {
         m_logger.warning(QStringLiteral("快照下载结果无法匹配游戏：云端路径 %1，本地路径 %2，结果：%3")
@@ -1643,11 +1831,35 @@ void SteamManager::handleSnapshotDownloadFinished(
             m_logger.warning(QStringLiteral("快照已下载，但写入本地快照索引失败：%1，本地路径 %2")
                                  .arg(game.displayName, QDir::toNativeSeparators(localFilePath)));
         }
-        ++m_pendingSnapshotDownloadSuccessByAppId[appId];
+        if (!shouldRestoreAfterDownload || isBatchDownload) {
+            ++m_pendingSnapshotDownloadSuccessByAppId[appId];
+        }
+        if (shouldRestoreAfterDownload) {
+            m_logger.info(QStringLiteral("云端快照下载完成，开始自动恢复：%1，文件：%2")
+                              .arg(game.displayName, QDir::toNativeSeparators(localFilePath)));
+            restoreLocalSnapshotForGame(appId, localFilePath);
+            if (!isBatchDownload) {
+                return;
+            }
+        }
         m_logger.info(QStringLiteral("快照下载完成：%1，云端路径 %2，本地路径 %3")
                           .arg(game.displayName, remoteFilePath, QDir::toNativeSeparators(localFilePath)));
     } else {
-        ++m_pendingSnapshotDownloadFailureByAppId[appId];
+        if (!shouldRestoreAfterDownload || isBatchDownload) {
+            ++m_pendingSnapshotDownloadFailureByAppId[appId];
+        }
+        if (shouldRestoreAfterDownload) {
+            refreshSnapshotRecordsForGame(
+                appId,
+                QStringLiteral("云端快照恢复失败"),
+                QStringLiteral("所选云端快照下载失败，因此未执行恢复。原因：%1").arg(message),
+                false);
+            m_logger.warning(QStringLiteral("云端快照恢复失败：%1，云端快照下载失败，原因：%2")
+                                 .arg(game.displayName, message));
+            if (!isBatchDownload) {
+                return;
+            }
+        }
         m_logger.warning(QStringLiteral("快照下载失败：%1，云端路径 %2，原因：%3")
                              .arg(game.displayName, remoteFilePath, message));
         if (remoteFilePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)

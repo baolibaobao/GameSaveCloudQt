@@ -14,6 +14,8 @@ Item {
     property color textColor: "#172033"
     property color mutedTextColor: "#6B7588"
     property color accentColor: "#0078D4"
+    property string pendingRestoreSnapshot: ""
+    property string pendingRestoreSnapshotName: ""
 
     signal refreshRequested()
     signal uploadAllRequested()
@@ -23,9 +25,55 @@ Item {
     signal createSnapshotRequested()
     signal uploadSelected(string snapshotPath)
     signal downloadSelected(string snapshotName)
+    signal restoreSelected(string snapshotPath)
 
     Layout.fillWidth: true
     Layout.fillHeight: true
+
+    Dialog {
+        id: restoreConfirmDialog
+
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        title: "确认恢复快照"
+        anchors.centerIn: parent
+
+        contentItem: Rectangle {
+            color: control.cardColor
+            implicitWidth: 420
+            implicitHeight: 138
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 16
+                spacing: 10
+
+                Text {
+                    text: control.mode === "cloud"
+                          ? "如果本地没有这个云端 zip 快照，软件会先下载；随后自动备份当前存档，并用该云端快照覆盖游戏真实存档目录。请确认游戏已经关闭。"
+                          : "恢复会先自动备份当前存档，然后用选中的 zip 快照覆盖游戏真实存档目录。请确认游戏已经关闭。"
+                    color: control.textColor
+                    font.pixelSize: 13
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    text: control.pendingRestoreSnapshotName
+                    color: control.mutedTextColor
+                    font.pixelSize: 12
+                    elide: Text.ElideMiddle
+                    Layout.fillWidth: true
+                }
+            }
+        }
+
+        onAccepted: control.restoreSelected(control.pendingRestoreSnapshot)
+        onClosed: {
+            control.pendingRestoreSnapshot = ""
+            control.pendingRestoreSnapshotName = ""
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -173,6 +221,23 @@ Item {
                                 } else {
                                     control.uploadSelected(modelData.zipPath || modelData.fileName || "")
                                 }
+                            }
+                        }
+
+                        ActionButton {
+                            visible: control.mode === "local" || control.mode === "cloud"
+                            Layout.preferredWidth: visible ? 82 : 0
+                            Layout.preferredHeight: visible ? 36 : 0
+                            kind: "ghost"
+                            icon: "\uE777"
+                            label: "恢复"
+                            darkMode: control.darkMode
+                            accentColor: control.accentColor
+                            labelPixelSize: 12
+                            onClicked: {
+                                control.pendingRestoreSnapshot = modelData.zipPath || modelData.fileName || ""
+                                control.pendingRestoreSnapshotName = modelData.fileName || control.pendingRestoreSnapshot
+                                restoreConfirmDialog.open()
                             }
                         }
                     }

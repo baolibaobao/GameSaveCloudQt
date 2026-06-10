@@ -46,6 +46,8 @@ qt_add_executable(GameSaveCloudQt
     src/snapshots/SnapshotPackageWriter.cpp
     src/snapshots/SnapshotPreprocessor.h
     src/snapshots/SnapshotPreprocessor.cpp
+    src/snapshots/SnapshotRestoreManager.h
+    src/snapshots/SnapshotRestoreManager.cpp
     src/snapshots/SnapshotSettings.h
     src/snapshots/SnapshotSettings.cpp
     src/storage/AppSettings.h
@@ -78,7 +80,6 @@ qt_add_qml_module(GameSaveCloudQt
         qml/components/LogPage.qml
         qml/components/ModernScrollBar.qml
         qml/components/SnapshotList.qml
-        qml/components/SnapshotListDialog.qml
         qml/components/ThemeToggle.qml
 )
 

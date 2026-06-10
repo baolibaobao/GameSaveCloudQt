@@ -21,6 +21,7 @@
 #include "process/GameProcessMonitor.h"
 #include "saves/SavePathResolver.h"
 #include "snapshots/SnapshotPreprocessor.h"
+#include "snapshots/SnapshotRestoreManager.h"
 #include "steam/SteamMetadataClient.h"
 #include "sync/QuarkGatewayManager.h"
 #include "sync/WebDavClient.h"
@@ -73,6 +74,8 @@ public:
     Q_INVOKABLE bool analyzeSnapshotForGame(const QString &appId);
     Q_INVOKABLE bool createSnapshotForGame(const QString &appId);
     Q_INVOKABLE bool deleteLocalSnapshotsForGame(const QString &appId);
+    Q_INVOKABLE bool restoreLocalSnapshotForGame(const QString &appId, const QString &snapshotPathOrFileName);
+    Q_INVOKABLE bool restoreCloudSnapshotForGame(const QString &appId, const QString &snapshotFileNameOrRemotePath);
     Q_INVOKABLE bool uploadAllSnapshotsForGame(const QString &appId);
     Q_INVOKABLE bool uploadLatestSnapshotForGame(const QString &appId);
     Q_INVOKABLE bool downloadAllSnapshotsForGame(const QString &appId);
@@ -124,6 +127,7 @@ private:
     void appendManualGames(QList<GameInfo> &games, QSet<QString> &seenAppIds) const;
     void upsertGameAndRebuild(const GameInfo &game, const QString &oldAppId = {});
     void persistManualGameIfPresent(const QString &appId);
+    bool shouldHideSteamApp(const GameInfo &game) const;
     void requestMetadataForGames(const QList<GameInfo> &games);
     void resolveSavePathsForGames(const QList<GameInfo> &games);
     void rebuildInstalledGamesFromModel();
@@ -223,6 +227,7 @@ private:
     SavePathResolver m_savePathResolver;
     GameProcessMonitor m_processMonitor;
     SnapshotPreprocessor m_snapshotPreprocessor;
+    SnapshotRestoreManager m_snapshotRestoreManager;
     AppLogger m_logger;
     WebDavSettings m_webDavSettings;
     WebDavClient m_webDavClient;
@@ -239,6 +244,7 @@ private:
     QHash<QString, int> m_pendingSnapshotUploadFailureByAppId;
     QHash<QString, QString> m_pendingSnapshotDownloadAppIds;
     QHash<QString, QVariantMap> m_pendingSnapshotDownloadRecords;
+    QSet<QString> m_pendingSnapshotRestoreDownloadPaths;
     QHash<QString, int> m_pendingSnapshotDownloadRemainingByAppId;
     QHash<QString, int> m_pendingSnapshotDownloadSuccessByAppId;
     QHash<QString, int> m_pendingSnapshotDownloadFailureByAppId;

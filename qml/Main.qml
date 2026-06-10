@@ -28,10 +28,6 @@ ApplicationWindow {
     readonly property color accentColor: "#0078D4"
     readonly property int sidebarWidth: 248
     property string pendingManualAppId: ""
-    property var snapshotDialogItems: []
-    property string snapshotDialogTitle: "本地快照"
-    property string snapshotDialogMode: "local"
-    property string snapshotDialogAppId: ""
     property string pendingDeleteSnapshotAppId: ""
     property string pendingDeleteSnapshotGameName: ""
     property int selectedGameIndex: -1
@@ -327,10 +323,6 @@ ApplicationWindow {
         target: steamManager
 
         function onCloudSnapshotsChanged(appId) {
-            if ((root.snapshotDialogMode === "download" || root.snapshotDialogMode === "cloud")
-                    && root.snapshotDialogAppId === appId) {
-                root.snapshotDialogItems = steamManager.cloudSnapshotsForGame(appId)
-            }
             if (root.selectedGameAppId === appId) {
                 root.detailCloudSnapshots = steamManager.cloudSnapshotsForGame(appId)
                 root.syncSelectedGame()
@@ -369,38 +361,6 @@ ApplicationWindow {
         }
     }
 
-    SnapshotListDialog {
-        id: snapshotListDialog
-        title: root.snapshotDialogTitle
-        width: Math.min(root.width - 80, 720)
-        height: Math.min(root.height - 80, 520)
-        anchors.centerIn: parent
-        backend: steamManager
-        mode: root.snapshotDialogMode
-        appId: root.snapshotDialogAppId
-        snapshots: root.snapshotDialogItems
-        panelColor: root.panelColor
-        textColor: root.textColor
-        mutedTextColor: root.mutedTextColor
-        darkMode: root.darkMode
-
-        onItemsRefreshed: function(items) {
-            root.snapshotDialogItems = items
-        }
-        onUploadAllRequested: function(appId) {
-            steamManager.uploadAllSnapshotsForGame(appId)
-        }
-        onDownloadAllRequested: function(appId) {
-            steamManager.downloadAllSnapshotsForGame(appId)
-        }
-        onUploadSelected: function(appId, snapshotPathOrFileName) {
-            steamManager.uploadSelectedSnapshotForGame(appId, snapshotPathOrFileName)
-        }
-        onDownloadSelected: function(appId, snapshotFileName) {
-            steamManager.downloadSelectedSnapshotForGame(appId, snapshotFileName)
-        }
-    }
-
     DeleteLocalSnapshotsDialog {
         id: deleteLocalSnapshotsDialog
         width: Math.min(root.width - 80, 520)
@@ -413,12 +373,8 @@ ApplicationWindow {
 
         onConfirmed: function(appId) {
             steamManager.deleteLocalSnapshotsForGame(appId)
-            if ((root.snapshotDialogMode === "upload"
-                    || root.snapshotDialogMode === "local"
-                    || root.snapshotDialogMode === "view")
-                    && root.snapshotDialogAppId === appId) {
-                root.snapshotDialogItems = steamManager.snapshotsForGame(appId)
-            }
+            if (root.selectedGameAppId === appId)
+                root.detailLocalSnapshots = steamManager.snapshotsForGame(appId)
         }
 
         onCleared: {
@@ -1860,6 +1816,10 @@ ApplicationWindow {
                                 onUploadSelected: function(snapshotPath) {
                                     steamManager.uploadSelectedSnapshotForGame(root.selectedGameAppId, snapshotPath)
                                 }
+                                onRestoreSelected: function(snapshotPath) {
+                                    steamManager.restoreLocalSnapshotForGame(root.selectedGameAppId, snapshotPath)
+                                    root.refreshSelectedDetailData()
+                                }
                             }
 
                             SnapshotList {
@@ -1878,6 +1838,10 @@ ApplicationWindow {
                                 onUploadAllRequested: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
                                 onDownloadSelected: function(snapshotName) {
                                     steamManager.downloadSelectedSnapshotForGame(root.selectedGameAppId, snapshotName)
+                                }
+                                onRestoreSelected: function(snapshotName) {
+                                    steamManager.restoreCloudSnapshotForGame(root.selectedGameAppId, snapshotName)
+                                    root.refreshSelectedDetailData()
                                 }
                             }
                             Flickable {
@@ -2382,11 +2346,8 @@ ApplicationWindow {
 
                                                 onClicked: {
                                                     steamManager.refreshLocalSnapshotsForGame(appId)
-                                                    root.snapshotDialogMode = "upload"
-                                                    root.snapshotDialogAppId = appId
-                                                    root.snapshotDialogTitle = displayName + " 的本地存档快照 · 上传"
-                                                    root.snapshotDialogItems = steamManager.snapshotsForGame(appId)
-                                                    snapshotListDialog.open()
+                                                    root.selectGame(index)
+                                                    root.switchDetailTab(1)
                                                 }
                                             }
 
@@ -2398,12 +2359,9 @@ ApplicationWindow {
                                                 font.pixelSize: 12
 
                                                 onClicked: {
-                                                    root.snapshotDialogMode = "download"
-                                                    root.snapshotDialogAppId = appId
-                                                    root.snapshotDialogTitle = displayName + " 的云端存档快照 · 下载"
-                                                    root.snapshotDialogItems = steamManager.cloudSnapshotsForGame(appId)
-                                                    snapshotListDialog.open()
                                                     steamManager.refreshCloudSnapshotsForGame(appId)
+                                                    root.selectGame(index)
+                                                    root.switchDetailTab(2)
                                                 }
                                             }
 

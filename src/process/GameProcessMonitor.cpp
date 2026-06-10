@@ -81,6 +81,11 @@ bool GameProcessMonitor::hasRunningGames() const
     return false;
 }
 
+bool GameProcessMonitor::isGameRunning(const QString &appId) const
+{
+    return m_lastRunningState.value(appId, false);
+}
+
 int GameProcessMonitor::trackedGameCount() const
 {
     return m_games.count();

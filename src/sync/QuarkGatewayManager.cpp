@@ -1007,14 +1007,25 @@ void QuarkGatewayManager::downloadFromUrlCandidates(
             return;
         }
 
-        file.write(payload);
-        if (file.error() != QFile::NoError) {
+        const qint64 writtenBytes = file.write(payload);
+        if (writtenBytes != payload.size() || file.error() != QFile::NoError) {
             finishFileDownload(false,
                                remoteFilePath,
                                localFilePath,
                                QStringLiteral("本地快照文件写入失败：%1").arg(file.errorString()));
             return;
         }
+
+        if (!file.flush()) {
+            const QString errorText = file.errorString();
+            file.close();
+            finishFileDownload(false,
+                               remoteFilePath,
+                               localFilePath,
+                               QStringLiteral("本地快照文件刷新到磁盘失败：%1").arg(errorText));
+            return;
+        }
+        file.close();
 
         finishFileDownload(true,
                            remoteFilePath,

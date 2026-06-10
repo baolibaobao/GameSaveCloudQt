@@ -20,6 +20,7 @@ public:
     void start();
     void stop();
     bool hasRunningGames() const;
+    bool isGameRunning(const QString &appId) const;
     int trackedGameCount() const;
 
 signals:
