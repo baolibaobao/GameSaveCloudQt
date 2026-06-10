@@ -73,6 +73,7 @@ qt_add_qml_module(GameSaveCloudQt
         qml/Main.qml
         qml/components/ActionButton.qml
         qml/components/AppTitleBar.qml
+        qml/components/AutoSyncSettingsPage.qml
         qml/components/CloudSettingsPage.qml
         qml/components/ConfirmDialog.qml
         qml/components/DeleteLocalSnapshotsDialog.qml

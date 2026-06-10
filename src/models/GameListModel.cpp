@@ -314,6 +314,27 @@ bool GameListModel::updateRunningStatus(const QString &appId, const QString &run
     return false;
 }
 
+bool GameListModel::updateSyncStatus(const QString &appId, const QString &syncStatus)
+{
+    for (int row = 0; row < m_games.count(); ++row) {
+        GameInfo &game = m_games[row];
+        if (game.appId != appId) {
+            continue;
+        }
+
+        if (game.syncStatus == syncStatus) {
+            return false;
+        }
+
+        game.syncStatus = syncStatus;
+        const QModelIndex changedIndex = index(row);
+        emit dataChanged(changedIndex, changedIndex, {SyncStatusRole});
+        return true;
+    }
+
+    return false;
+}
+
 bool GameListModel::updateSnapshotStatus(
     const QString &appId,
     const QString &status,

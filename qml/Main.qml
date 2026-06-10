@@ -37,6 +37,7 @@ ApplicationWindow {
     property string pendingAlertDetail: ""
     property bool pendingAlertDanger: false
     property string lastCookieAlertStatus: ""
+    property int autoSyncRevision: 0
     property int selectedGameIndex: -1
     property string selectedGameAppId: ""
     property var selectedGame: ({})
@@ -382,6 +383,11 @@ ApplicationWindow {
         function onUserAlertRequested(title, message, detail, danger) {
             root.showUserAlert(title, message, detail, danger);
         }
+
+        function onAutoSyncSettingsChanged() {
+            root.autoSyncRevision += 1;
+            root.syncSelectedGame();
+        }
     }
 
     Connections {
@@ -658,6 +664,34 @@ ApplicationWindow {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: root.currentPage = 2
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 46
+                                Layout.leftMargin: 6
+                                Layout.rightMargin: 6
+                                radius: 23
+                                color: root.navBackground(3, autoSyncPageArea.containsMouse)
+                                border.width: 1
+                                border.color: root.navBorderColor(3, autoSyncPageArea.containsMouse)
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "自动同步"
+                                    color: root.navTextColor(3, autoSyncPageArea.containsMouse)
+                                    font.family: root.appFontFamily
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+
+                                MouseArea {
+                                    id: autoSyncPageArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.currentPage = 3
                                 }
                             }
 
@@ -2668,6 +2702,18 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 visible: root.currentPage === 2
                                 backend: steamManager
+                                darkMode: root.darkMode
+                                textColor: root.textColor
+                                mutedTextColor: root.mutedTextColor
+                                accentColor: root.accentColor
+                            }
+
+                            AutoSyncSettingsPage {
+                                id: autoSyncPage
+                                anchors.fill: parent
+                                visible: root.currentPage === 3
+                                backend: steamManager
+                                revision: root.autoSyncRevision + root.gameStatsRevision
                                 darkMode: root.darkMode
                                 textColor: root.textColor
                                 mutedTextColor: root.mutedTextColor

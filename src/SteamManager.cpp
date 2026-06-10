@@ -29,6 +29,7 @@ SteamManager::SteamManager(QObject *parent)
                                    ? QStringLiteral("已保存 WebDAV 配置，等待测试连接")
                                    : QStringLiteral("未配置 WebDAV，请填写云同步连接信息");
     loadQuarkGatewaySettings();
+    loadAutoSyncSettings();
     m_webDavConnectionStatus = m_quarkCookie.trimmed().isEmpty()
                                    ? QStringLiteral("未连接夸克网盘，请粘贴 Cookie 后点击连接")
                                    : QStringLiteral("已保存夸克 Cookie，等待自动连接夸克网盘");
@@ -187,6 +188,7 @@ SteamManager::SteamManager(QObject *parent)
                 const QString displayName = game.isValid() ? game.displayName : appId;
                 m_logger.info(QStringLiteral("游戏进程监控：检测到游戏已关闭，游戏：%1，进程：%2，后续阶段将触发云同步检查")
                                   .arg(displayName, processName));
+                handleGameClosedForAutoSync(appId, processName);
             });
 
     connect(&m_webDavClient, &WebDavClient::connectionTestFinished, this,
@@ -354,6 +356,11 @@ QString SteamManager::quarkCookie() const
 QString SteamManager::quarkGatewayStatus() const
 {
     return m_quarkGatewayStatus;
+}
+
+bool SteamManager::autoSyncEnabled() const
+{
+    return m_autoSyncEnabled;
 }
 
 QVariantList SteamManager::installedGames() const
@@ -1459,6 +1466,94 @@ bool SteamManager::saveQuarkCookieGateway(const QString &cookie)
     return true;
 }
 
+bool SteamManager::setAutoSyncEnabled(bool enabled)
+{
+    const std::unique_ptr<QSettings> settings = AppSettings::create();
+    settings->setValue(QStringLiteral("autoSync/enabled"), enabled);
+    settings->sync();
+    if (settings->status() != QSettings::NoError) {
+        m_logger.warning(QStringLiteral("自动同步设置保存失败：无法写入全局开关"));
+        return false;
+    }
+
+    if (m_autoSyncEnabled == enabled) {
+        return true;
+    }
+
+    m_autoSyncEnabled = enabled;
+    emit autoSyncSettingsChanged();
+    m_logger.info(enabled
+                      ? QStringLiteral("自动同步已启用：游戏关闭后会自动检查并创建本地存档快照")
+                      : QStringLiteral("自动同步已关闭：游戏关闭后不会自动创建快照"));
+    return true;
+}
+
+bool SteamManager::autoSyncEnabledForGame(const QString &appId) const
+{
+    const QString cleanAppId = appId.trimmed();
+    if (cleanAppId.isEmpty()) {
+        return false;
+    }
+
+    const std::unique_ptr<QSettings> settings = AppSettings::create();
+    return settings->value(autoSyncGameSettingsKey(cleanAppId), false).toBool();
+}
+
+bool SteamManager::setAutoSyncEnabledForGame(const QString &appId, bool enabled)
+{
+    const QString cleanAppId = appId.trimmed();
+    const GameInfo game = gameByAppId(cleanAppId);
+    if (cleanAppId.isEmpty() || !game.isValid()) {
+        return false;
+    }
+
+    const std::unique_ptr<QSettings> settings = AppSettings::create();
+    settings->setValue(autoSyncGameSettingsKey(cleanAppId), enabled);
+    settings->sync();
+    if (settings->status() != QSettings::NoError) {
+        m_logger.warning(QStringLiteral("自动同步设置保存失败：游戏 %1 的单独开关无法写入").arg(game.displayName));
+        return false;
+    }
+
+    emit autoSyncSettingsChanged();
+    updateSyncStatusForGame(cleanAppId, enabled ? QStringLiteral("自动同步已启用，等待游戏关闭后检查") : QStringLiteral("自动同步已对该游戏关闭"));
+    m_logger.info(QStringLiteral("游戏自动同步开关已更新：%1，状态：%2")
+                      .arg(game.displayName, enabled ? QStringLiteral("启用") : QStringLiteral("关闭")));
+    return true;
+}
+
+bool SteamManager::setAutoSyncEnabledForAllGames(bool enabled)
+{
+    const QList<GameInfo> games = m_gameModel.games();
+    const std::unique_ptr<QSettings> settings = AppSettings::create();
+    int updatedCount = 0;
+    for (const GameInfo &game : games) {
+        if (!game.isValid()) {
+            continue;
+        }
+        settings->setValue(autoSyncGameSettingsKey(game.appId), enabled);
+        ++updatedCount;
+    }
+    settings->sync();
+    if (settings->status() != QSettings::NoError) {
+        m_logger.warning(QStringLiteral("自动同步批量设置保存失败：无法写入游戏开关"));
+        return false;
+    }
+
+    for (const GameInfo &game : games) {
+        if (!game.isValid()) {
+            continue;
+        }
+        updateSyncStatusForGame(game.appId, enabled ? QStringLiteral("自动同步已启用，等待游戏关闭后检查") : QStringLiteral("自动同步已对该游戏关闭"));
+    }
+
+    emit autoSyncSettingsChanged();
+    m_logger.info(QStringLiteral("自动同步批量设置完成：%1，影响游戏数量：%2")
+                      .arg(enabled ? QStringLiteral("全开") : QStringLiteral("全关"))
+                      .arg(updatedCount));
+    return true;
+}
+
 QStringList SteamManager::steamAppsDirectories(const QString &steamRootPath) const
 {
     QStringList directories;
@@ -1852,6 +1947,8 @@ void SteamManager::handleSnapshotUploadFinished(
 {
     const QString appId = m_pendingSnapshotUploadAppIds.take(localFilePath);
     const QString fileName = m_pendingSnapshotUploadFileNames.take(localFilePath);
+    const bool isBatchUpload = m_pendingBatchSnapshotUploadPaths.remove(localFilePath) > 0;
+    const bool isAutoSyncUpload = m_pendingAutoSyncUploadPaths.remove(localFilePath) > 0;
     const GameInfo game = gameByAppId(appId);
 
     if (!game.isValid()) {
@@ -1860,7 +1957,6 @@ void SteamManager::handleSnapshotUploadFinished(
     }
 
     const QString currentSnapshotDirectory = m_snapshotPreprocessor.snapshotDirectoryForGame(game);
-    const bool isBatchUpload = m_pendingSnapshotUploadRemainingByAppId.contains(appId);
 
     if (success) {
         m_snapshotPreprocessor.markSnapshotUploadState(
@@ -1886,6 +1982,15 @@ void SteamManager::handleSnapshotUploadFinished(
         applySnapshotResult(appId, refreshed);
         m_logger.info(QStringLiteral("快照云端同步完成：%1，状态：%2，云端路径：%3")
                           .arg(game.displayName, uploadState, remoteFilePath));
+        if (isAutoSyncUpload) {
+            updateSyncStatusForGame(
+                appId,
+                uploadState == QStringLiteral("remote_exists")
+                    ? QStringLiteral("自动同步完成：已创建本地快照，云端已有同名快照并已跳过上传")
+                    : QStringLiteral("自动同步完成：已创建本地快照并上传云端"));
+            m_logger.info(QStringLiteral("自动同步云端上传完成：%1，状态：%2，云端路径：%3")
+                              .arg(game.displayName, uploadState, remoteFilePath));
+        }
         if (isBatchUpload) {
             ++m_pendingSnapshotUploadSuccessByAppId[appId];
         }
@@ -1905,6 +2010,22 @@ void SteamManager::handleSnapshotUploadFinished(
         };
         applySnapshotResult(appId, failed);
         m_logger.error(QStringLiteral("快照云端同步失败：%1，原因：%2").arg(game.displayName, message));
+        if (isAutoSyncUpload) {
+            updateSyncStatusForGame(appId, QStringLiteral("自动同步失败：快照已创建，但云端上传失败"));
+            m_logger.error(QStringLiteral("自动同步云端上传失败：%1，原因：%2").arg(game.displayName, message));
+            if (remoteFilePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)
+                && isQuarkAuthFailureMessage(message)) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 可能已过期或上传鉴权异常：自动同步已创建本地快照，但上传云端失败。请在云同步设置中更新 Cookie 后重新连接。"));
+            } else if (message.contains(QStringLiteral("quark_gateway_not_ready"), Qt::CaseInsensitive)
+                       || message.contains(QStringLiteral("未就绪"), Qt::CaseInsensitive)
+                       || message.contains(QStringLiteral("未连接"), Qt::CaseInsensitive)) {
+                emit userAlertRequested(
+                    QStringLiteral("自动同步未上传云端"),
+                    QStringLiteral("%1 的本地快照已创建，但云端连接尚未就绪。").arg(game.displayName),
+                    QStringLiteral("本地 zip 快照已经保留。请进入“云同步设置”确认夸克网关连接成功后，再手动上传该快照。失败原因：%1").arg(message),
+                    false);
+            }
+        }
     }
 
     int remaining = isBatchUpload ? m_pendingSnapshotUploadRemainingByAppId.value(appId, 0) : 0;
@@ -2589,6 +2710,7 @@ bool SteamManager::uploadSnapshotRecordsForGame(const GameInfo &game, const QVar
 
         m_pendingSnapshotUploadAppIds.insert(zipPath, game.appId);
         m_pendingSnapshotUploadFileNames.insert(zipPath, fileName);
+        m_pendingBatchSnapshotUploadPaths.insert(zipPath);
         m_logger.info(QStringLiteral("开始上传检查本地快照：%1，本地文件：%2，云端目录：%3")
                           .arg(game.displayName, QDir::toNativeSeparators(zipPath), remoteDirectory));
         if (remoteDirectory.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
@@ -2598,6 +2720,79 @@ bool SteamManager::uploadSnapshotRecordsForGame(const GameInfo &game, const QVar
         }
     }
 
+    return true;
+}
+
+bool SteamManager::uploadAutoSyncSnapshotForGame(const GameInfo &game, const QVariantMap &snapshotResult)
+{
+    if (!game.isValid()) {
+        return false;
+    }
+
+    const QString zipPath = snapshotResult.value(QStringLiteral("snapshotPath")).toString().trimmed();
+    QString fileName = snapshotResult.value(QStringLiteral("snapshotFileName")).toString().trimmed();
+    if (zipPath.isEmpty()) {
+        updateSyncStatusForGame(game.appId, QStringLiteral("自动同步失败：快照已创建，但没有获得 zip 文件路径"));
+        m_logger.warning(QStringLiteral("自动同步上传失败：%1 的快照创建结果没有返回 zip 文件路径").arg(game.displayName));
+        return false;
+    }
+
+    const QFileInfo zipInfo(zipPath);
+    if (!zipInfo.exists() || !zipInfo.isFile()) {
+        updateSyncStatusForGame(game.appId, QStringLiteral("自动同步失败：快照文件不存在，未上传云端"));
+        m_logger.warning(QStringLiteral("自动同步上传失败：%1 的快照文件不存在，路径：%2")
+                             .arg(game.displayName, QDir::toNativeSeparators(zipPath)));
+        refreshLocalSnapshotsForGame(game.appId);
+        return false;
+    }
+
+    if (!m_webDavConfig.isValid()) {
+        updateSyncStatusForGame(game.appId, QStringLiteral("自动同步失败：云端未连接，快照只保存在本地"));
+        refreshSnapshotRecordsForGame(
+            game.appId,
+            QStringLiteral("自动同步已创建本地快照，但云端未连接"),
+            QStringLiteral("快照已经保存到本地目录，但夸克/OpenList 网关或 WebDAV 配置尚未就绪，因此没有上传云端"),
+            false);
+        m_logger.warning(QStringLiteral("自动同步上传跳过：%1 已创建本地快照，但云端未连接或 WebDAV 配置不完整")
+                             .arg(game.displayName));
+        emit userAlertRequested(
+            QStringLiteral("自动同步未上传云端"),
+            QStringLiteral("%1 的本地快照已创建，但云端尚未连接。").arg(game.displayName),
+            QStringLiteral("请进入“云同步设置”确认夸克 Cookie/OpenList 网关连接成功后，再手动上传该快照，或等待下一次自动同步。"),
+            false);
+        return false;
+    }
+
+    const QString uploadPath = zipInfo.absoluteFilePath();
+    if (fileName.isEmpty()) {
+        fileName = zipInfo.fileName();
+    }
+
+    if (m_pendingSnapshotUploadAppIds.contains(uploadPath)) {
+        updateSyncStatusForGame(game.appId, QStringLiteral("自动同步上传已在队列中"));
+        m_logger.info(QStringLiteral("自动同步上传跳过重复请求：%1，快照：%2")
+                          .arg(game.displayName, QDir::toNativeSeparators(uploadPath)));
+        return true;
+    }
+
+    const QString remoteDirectory = cloudDirectoryForGame(game);
+    m_pendingSnapshotUploadAppIds.insert(uploadPath, game.appId);
+    m_pendingSnapshotUploadFileNames.insert(uploadPath, fileName);
+    m_pendingAutoSyncUploadPaths.insert(uploadPath);
+
+    refreshSnapshotRecordsForGame(
+        game.appId,
+        QStringLiteral("自动同步正在上传新快照"),
+        QStringLiteral("本次游戏关闭后创建的新快照正在上传云端；如果云端已有同名文件，会自动跳过"),
+        false);
+    m_logger.info(QStringLiteral("自动同步开始上传新快照：%1，本地文件：%2，云端目录：%3")
+                      .arg(game.displayName, QDir::toNativeSeparators(uploadPath), remoteDirectory));
+
+    if (remoteDirectory.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
+        m_quarkGatewayManager.uploadFileIfMissing(uploadPath, remoteDirectory);
+    } else {
+        m_webDavClient.uploadFileIfMissing(m_webDavConfig, uploadPath, remoteDirectory);
+    }
     return true;
 }
 
@@ -3275,6 +3470,88 @@ void SteamManager::loadQuarkGatewaySettings()
     m_quarkGatewayStatus = m_quarkCookie.trimmed().isEmpty()
                                ? QStringLiteral("未配置夸克 Cookie")
                                : QStringLiteral("已保存夸克 Cookie，等待本机网关连接");
+}
+
+void SteamManager::loadAutoSyncSettings()
+{
+    const std::unique_ptr<QSettings> settings = AppSettings::create();
+    m_autoSyncEnabled = settings->value(QStringLiteral("autoSync/enabled"), false).toBool();
+}
+
+QString SteamManager::autoSyncGameSettingsKey(const QString &appId) const
+{
+    const QByteArray encodedAppId = QUrl::toPercentEncoding(appId.trimmed());
+    return QStringLiteral("autoSync/games/%1/enabled").arg(QString::fromLatin1(encodedAppId));
+}
+
+void SteamManager::updateSyncStatusForGame(const QString &appId, const QString &status)
+{
+    if (m_gameModel.updateSyncStatus(appId, status)) {
+        persistManualGameIfPresent(appId);
+        rebuildInstalledGamesFromModel();
+    }
+}
+
+void SteamManager::handleGameClosedForAutoSync(const QString &appId, const QString &processName)
+{
+    Q_UNUSED(processName)
+
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return;
+    }
+
+    if (!m_autoSyncEnabled) {
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步已关闭"));
+        m_logger.info(QStringLiteral("自动同步跳过：全局自动同步未启用，游戏：%1").arg(game.displayName));
+        return;
+    }
+
+    if (!autoSyncEnabledForGame(appId)) {
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步已对该游戏关闭"));
+        m_logger.info(QStringLiteral("自动同步跳过：该游戏未启用自动同步，游戏：%1").arg(game.displayName));
+        return;
+    }
+
+    if (!game.savePathCanSync || game.savePath.trimmed().isEmpty()) {
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步跳过：当前没有可同步的本地存档目录"));
+        m_logger.warning(QStringLiteral("自动同步跳过：%1 当前没有可同步的本地存档目录").arg(game.displayName));
+        return;
+    }
+
+    m_logger.info(QStringLiteral("自动同步开始：检测到游戏关闭，开始检查本地存档变化，游戏：%1").arg(game.displayName));
+    updateSyncStatusForGame(appId, QStringLiteral("自动同步检查中"));
+
+    const QVariantMap analysis = m_snapshotPreprocessor.analyzeGame(game);
+    applySnapshotResult(appId, analysis);
+
+    if (!analysis.value(QStringLiteral("success")).toBool()) {
+        const QString detail = analysis.value(QStringLiteral("detail")).toString();
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步检查失败"));
+        m_logger.warning(QStringLiteral("自动同步检查失败：%1，原因：%2").arg(game.displayName, detail));
+        return;
+    }
+
+    if (!analysis.value(QStringLiteral("needsSnapshot")).toBool()) {
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步完成：存档无变化，未创建新快照"));
+        m_logger.info(QStringLiteral("自动同步完成：%1 存档无变化，未创建新快照").arg(game.displayName));
+        return;
+    }
+
+    const QVariantMap snapshotResult = m_snapshotPreprocessor.createSnapshotForGame(game);
+    applySnapshotResult(appId, snapshotResult);
+
+    if (snapshotResult.value(QStringLiteral("success")).toBool()) {
+        const QString fileName = snapshotResult.value(QStringLiteral("snapshotFileName")).toString();
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步已创建本地快照，正在上传云端"));
+        m_logger.info(QStringLiteral("自动同步已创建本地快照：%1，快照：%2，开始上传云端")
+                          .arg(game.displayName, fileName));
+        uploadAutoSyncSnapshotForGame(game, snapshotResult);
+    } else {
+        const QString detail = snapshotResult.value(QStringLiteral("detail")).toString();
+        updateSyncStatusForGame(appId, QStringLiteral("自动同步失败：本地快照创建失败"));
+        m_logger.error(QStringLiteral("自动同步失败：%1 本地快照创建失败，原因：%2").arg(game.displayName, detail));
+    }
 }
 
 void SteamManager::setQuarkGatewayStatus(const QString &status)

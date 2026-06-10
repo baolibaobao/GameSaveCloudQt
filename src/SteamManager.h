@@ -42,6 +42,7 @@ class SteamManager : public QObject
     Q_PROPERTY(bool webDavTesting READ webDavTesting NOTIFY webDavTestingChanged)
     Q_PROPERTY(QString quarkCookie READ quarkCookie NOTIFY quarkGatewaySettingsChanged)
     Q_PROPERTY(QString quarkGatewayStatus READ quarkGatewayStatus NOTIFY quarkGatewayStatusChanged)
+    Q_PROPERTY(bool autoSyncEnabled READ autoSyncEnabled NOTIFY autoSyncSettingsChanged)
     Q_PROPERTY(QVariantList installedGames READ installedGames NOTIFY installedGamesChanged)
     Q_PROPERTY(GameListModel *gameModel READ gameModel CONSTANT)
     Q_PROPERTY(LogListModel *logModel READ logModel CONSTANT)
@@ -61,6 +62,7 @@ public:
     bool webDavTesting() const;
     QString quarkCookie() const;
     QString quarkGatewayStatus() const;
+    bool autoSyncEnabled() const;
     QVariantList installedGames() const;
     GameListModel *gameModel();
     LogListModel *logModel();
@@ -108,6 +110,10 @@ public:
         const QString &password,
         const QString &remoteRootPath);
     Q_INVOKABLE bool saveQuarkCookieGateway(const QString &cookie);
+    Q_INVOKABLE bool setAutoSyncEnabled(bool enabled);
+    Q_INVOKABLE bool autoSyncEnabledForGame(const QString &appId) const;
+    Q_INVOKABLE bool setAutoSyncEnabledForGame(const QString &appId, bool enabled);
+    Q_INVOKABLE bool setAutoSyncEnabledForAllGames(bool enabled);
 
 signals:
     void steamPathChanged();
@@ -119,6 +125,7 @@ signals:
     void webDavTestingChanged();
     void quarkGatewaySettingsChanged();
     void quarkGatewayStatusChanged();
+    void autoSyncSettingsChanged();
     void installedGamesChanged();
     void cloudSnapshotsChanged(const QString &appId);
     void userAlertRequested(
@@ -180,6 +187,7 @@ private:
     QVariantList cloudSnapshotRecordsFromGameManifest(const QJsonObject &gameManifest) const;
     QVariantList downloadableSnapshotRecordsForGame(const GameInfo &game) const;
     bool uploadSnapshotRecordsForGame(const GameInfo &game, const QVariantList &snapshots);
+    bool uploadAutoSyncSnapshotForGame(const GameInfo &game, const QVariantMap &snapshotResult);
     bool downloadSnapshotRecordsForGame(const GameInfo &game, const QVariantList &snapshots);
     void applyCloudRootManifest(const QByteArray &data);
     void applyCloudSnapshotRecordsToModel();
@@ -227,6 +235,10 @@ private:
     void startQuarkCookieHealthCheck();
     QString quarkCookieHealthCheckPath() const;
     bool isQuarkAuthFailureMessage(const QString &message) const;
+    void loadAutoSyncSettings();
+    QString autoSyncGameSettingsKey(const QString &appId) const;
+    void handleGameClosedForAutoSync(const QString &appId, const QString &processName);
+    void updateSyncStatusForGame(const QString &appId, const QString &status);
     void refreshCloudSnapshotsForGameInternal(const QString &appId, bool quiet);
     bool shouldLogAutomaticCloudRefresh(const QString &appId);
 
@@ -247,8 +259,11 @@ private:
     bool m_webDavTesting = false;
     QString m_quarkCookie;
     QString m_quarkGatewayStatus;
+    bool m_autoSyncEnabled = false;
     QHash<QString, QString> m_pendingSnapshotUploadAppIds;
     QHash<QString, QString> m_pendingSnapshotUploadFileNames;
+    QSet<QString> m_pendingBatchSnapshotUploadPaths;
+    QSet<QString> m_pendingAutoSyncUploadPaths;
     QHash<QString, int> m_pendingSnapshotUploadRemainingByAppId;
     QHash<QString, int> m_pendingSnapshotUploadSuccessByAppId;
     QHash<QString, int> m_pendingSnapshotUploadFailureByAppId;

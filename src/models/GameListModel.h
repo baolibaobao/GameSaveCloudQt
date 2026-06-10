@@ -73,6 +73,7 @@ public:
         const QString &detail,
         bool canSync);
     bool updateRunningStatus(const QString &appId, const QString &runningStatus);
+    bool updateSyncStatus(const QString &appId, const QString &syncStatus);
     bool updateSnapshotStatus(
         const QString &appId,
         const QString &status,
