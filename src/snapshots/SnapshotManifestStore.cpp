@@ -24,13 +24,25 @@ QString SnapshotManifestStore::gameSnapshotDirectory(const QString &snapshotRoot
 
 QVariantMap SnapshotManifestStore::loadManifest(const QString &snapshotRootPath, const GameInfo &game) const
 {
-    QFile file(manifestPath(snapshotRootPath, game));
+    const QString path = manifestPath(snapshotRootPath, game);
+    QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
     }
 
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    return normalizeSnapshotPaths(snapshotRootPath, game, document.object().toVariantMap());
+    file.close();
+
+    const QVariantMap manifest = document.object().toVariantMap();
+    const QVariantMap normalizedManifest = normalizeSnapshotPaths(snapshotRootPath, game, manifest);
+    if (normalizedManifest != manifest) {
+        QFile writableFile(path);
+        if (writableFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            writableFile.write(QJsonDocument::fromVariant(normalizedManifest).toJson(QJsonDocument::Indented));
+        }
+    }
+
+    return normalizedManifest;
 }
 
 bool SnapshotManifestStore::saveScanBaseline(
@@ -342,26 +354,28 @@ QVariantMap SnapshotManifestStore::normalizeSnapshotPaths(
     }
 
     QVariantList snapshots = manifest.value(QStringLiteral("snapshots")).toList();
+    QVariantList existingSnapshots;
     for (QVariant &snapshotItem : snapshots) {
         QVariantMap snapshot = snapshotItem.toMap();
         const QString normalizedPath = normalizedZipPathForRecord(
             snapshotDirectory,
             snapshot.value(QStringLiteral("fileName")).toString(),
             snapshot.value(QStringLiteral("zipPath")).toString());
-        if (!normalizedPath.isEmpty()) {
-            snapshot.insert(QStringLiteral("zipPath"), normalizedPath);
+        const QFileInfo zipInfo(normalizedPath);
+        if (!normalizedPath.isEmpty() && zipInfo.exists() && zipInfo.isFile()) {
+            snapshot.insert(QStringLiteral("zipPath"), QDir::toNativeSeparators(zipInfo.absoluteFilePath()));
+            existingSnapshots.append(snapshot);
         }
-        snapshotItem = snapshot;
     }
-    manifest.insert(QStringLiteral("snapshots"), snapshots);
+    manifest.insert(QStringLiteral("snapshots"), existingSnapshots);
 
-    const QString latestFileName = manifest.value(QStringLiteral("latestSnapshotFileName")).toString();
-    const QString latestPath = normalizedZipPathForRecord(
-        snapshotDirectory,
-        latestFileName,
-        manifest.value(QStringLiteral("latestSnapshotPath")).toString());
-    if (!latestPath.isEmpty()) {
-        manifest.insert(QStringLiteral("latestSnapshotPath"), latestPath);
+    const QVariantMap latestSnapshot = existingSnapshots.isEmpty() ? QVariantMap() : existingSnapshots.last().toMap();
+    if (latestSnapshot.isEmpty()) {
+        manifest.insert(QStringLiteral("latestSnapshotFileName"), QString());
+        manifest.insert(QStringLiteral("latestSnapshotPath"), QString());
+    } else {
+        manifest.insert(QStringLiteral("latestSnapshotFileName"), latestSnapshot.value(QStringLiteral("fileName")).toString());
+        manifest.insert(QStringLiteral("latestSnapshotPath"), latestSnapshot.value(QStringLiteral("zipPath")).toString());
     }
 
     return manifest;

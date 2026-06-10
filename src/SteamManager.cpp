@@ -302,7 +302,7 @@ SteamManager::SteamManager(QObject *parent)
             setWebDavConnectionStatus(QStringLiteral("正在自动连接夸克网盘"));
             setQuarkGatewayStatus(QStringLiteral("已读取本地保存的夸克 Cookie，正在自动启动 OpenList 本机网关"));
             m_logger.info(QStringLiteral("已读取本地保存的夸克 Cookie，开始自动连接夸克网盘"));
-            m_quarkGatewayManager.startAndConfigure(m_quarkCookie);
+            m_quarkGatewayManager.startAndConfigure(m_quarkCookie, false);
         });
     }
 }
@@ -1517,7 +1517,7 @@ bool SteamManager::saveQuarkCookieGateway(const QString &cookie)
     setWebDavConnectionStatus(QStringLiteral("正在启动和配置夸克本机网关"));
     setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 已保存，正在启动 OpenList 本机网关"));
     m_logger.info(QStringLiteral("夸克 Cookie 已保存，开始启动 OpenList 本机网关"));
-    m_quarkGatewayManager.startAndConfigure(cleanCookie);
+    m_quarkGatewayManager.startAndConfigure(cleanCookie, true);
     return true;
 }
 
@@ -2285,13 +2285,14 @@ void SteamManager::handleCloudDataUploadFinished(
         if (success) {
             m_logger.info(QStringLiteral("夸克 Cookie 健康检查：探针文件已写入，开始验证读取能力"));
             m_quarkGatewayManager.downloadDataFile(
-                quarkCookieHealthCheckPath(),
+                remoteFilePath,
                 QStringLiteral("quark-cookie-health-download"));
         } else {
-            const QString status = isQuarkAuthFailureMessage(message)
-                                       ? QStringLiteral("夸克 Cookie 健康检查失败：Cookie 可能已过期或鉴权异常，请更新 Cookie 后重新连接")
-                                       : QStringLiteral("夸克 Cookie 健康检查失败：无法写入探针文件，请查看日志确认 OpenList/夸克网关状态");
-            setQuarkGatewayStatus(status);
+            if (isQuarkAuthFailureMessage(message)) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 健康检查失败：Cookie 可能已过期或鉴权异常，请更新 Cookie 后重新连接"));
+            } else {
+                setQuarkGatewayStatus(QStringLiteral("夸克网关已连接，健康检查探针写入未完成；若云端快照可读写，可继续使用"));
+            }
             m_logger.warning(QStringLiteral("夸克 Cookie 健康检查写入失败：路径：%1，原因：%2").arg(remoteFilePath, message));
         }
         return;
@@ -2738,6 +2739,10 @@ QVariantList SteamManager::cloudSnapshotRecordsFromLocalManifest(const GameInfo 
                 || uploadState == QStringLiteral("cloud_manifest"))) {
             remotePath = cloudDirectoryForGame(game) + QLatin1Char('/') + fileName;
         }
+        const QString legacyDirectory = QStringLiteral("%1/apps/%2").arg(cloudRootPath(), game.appId.trimmed());
+        if (remotePath.startsWith(legacyDirectory + QLatin1Char('/'), Qt::CaseInsensitive)) {
+            remotePath = cloudDirectoryForGame(game) + QLatin1Char('/') + fileName;
+        }
 
         if (remotePath.trimmed().isEmpty()) {
             continue;
@@ -2781,6 +2786,10 @@ QVariantList SteamManager::cloudSnapshotRecordsFromExistingLocalSnapshots(const 
             && (uploadState == QStringLiteral("uploaded")
                 || uploadState == QStringLiteral("remote_exists")
                 || uploadState == QStringLiteral("cloud_manifest"))) {
+            remotePath = cloudDirectoryForGame(game) + QLatin1Char('/') + fileName;
+        }
+        const QString legacyDirectory = QStringLiteral("%1/apps/%2").arg(cloudRootPath(), game.appId.trimmed());
+        if (remotePath.startsWith(legacyDirectory + QLatin1Char('/'), Qt::CaseInsensitive)) {
             remotePath = cloudDirectoryForGame(game) + QLatin1Char('/') + fileName;
         }
 
@@ -3123,11 +3132,19 @@ void SteamManager::applyCloudRootManifest(const QByteArray &data)
         const QJsonObject item = value.toObject();
         const QString appId = item.value(QStringLiteral("appId")).toString();
         const QString fileName = item.value(QStringLiteral("latestSnapshotFileName")).toString();
-        const QString remotePath = item.value(QStringLiteral("latestRemotePath")).toString();
+        QString remotePath = item.value(QStringLiteral("latestRemotePath")).toString();
         QString remoteDirectory = item.value(QStringLiteral("remoteDirectory")).toString().trimmed();
         const int count = item.value(QStringLiteral("snapshotCount")).toInt();
         if (appId.trimmed().isEmpty()) {
             continue;
+        }
+
+        const GameInfo game = gameByAppId(appId);
+        const QString preferredDirectory = game.isValid() ? cloudDirectoryForGame(game) : QString();
+        const QString legacyDirectory = QStringLiteral("%1/apps/%2").arg(cloudRootPath(), appId.trimmed());
+        if (!preferredDirectory.isEmpty()
+            && remoteDirectory.compare(legacyDirectory, Qt::CaseInsensitive) == 0) {
+            remoteDirectory = preferredDirectory;
         }
 
         if (remoteDirectory.isEmpty()) {
@@ -3142,6 +3159,14 @@ void SteamManager::applyCloudRootManifest(const QByteArray &data)
         }
         while (remoteDirectory.length() > 1 && remoteDirectory.endsWith(QLatin1Char('/'))) {
             remoteDirectory.chop(1);
+        }
+        if (!preferredDirectory.isEmpty()
+            && remoteDirectory.compare(legacyDirectory, Qt::CaseInsensitive) == 0) {
+            remoteDirectory = preferredDirectory;
+        }
+        if (!preferredDirectory.isEmpty()
+            && remotePath.startsWith(legacyDirectory + QLatin1Char('/'), Qt::CaseInsensitive)) {
+            remotePath = preferredDirectory + QLatin1Char('/') + QFileInfo(remotePath).fileName();
         }
         if (!remoteDirectory.isEmpty()) {
             m_cloudDirectoryByAppId.insert(appId, remoteDirectory);
@@ -3615,16 +3640,9 @@ void SteamManager::setWebDavTesting(bool testing)
 QString SteamManager::cloudDirectoryForGame(const GameInfo &game) const
 {
     const QString rootPath = cloudRootPath();
-    const QString cachedDirectory = m_cloudDirectoryByAppId.value(game.appId).trimmed();
-    if (!cachedDirectory.isEmpty()
-        && (cachedDirectory == rootPath
-            || cachedDirectory.startsWith(rootPath + QLatin1Char('/'), Qt::CaseInsensitive))) {
-        return cachedDirectory;
-    }
-
-    QString name = game.appId.trimmed();
+    QString name = game.displayName.trimmed().isEmpty() ? game.name.trimmed() : game.displayName.trimmed();
     if (name.isEmpty()) {
-        name = game.displayName.isEmpty() ? game.name : game.displayName;
+        name = game.appId.trimmed();
     }
 
     name.replace(QRegularExpression(QStringLiteral(R"([<>:"/\\|?*])")), QStringLiteral("_"));
@@ -3634,7 +3652,17 @@ QString SteamManager::cloudDirectoryForGame(const GameInfo &game) const
         name = QStringLiteral("Unknown_Game");
     }
 
-    return QStringLiteral("%1/apps/%2").arg(rootPath, name);
+    const QString preferredDirectory = QStringLiteral("%1/%2").arg(rootPath, name);
+    const QString legacyAppDirectory = QStringLiteral("%1/apps/%2").arg(rootPath, game.appId.trimmed());
+    const QString cachedDirectory = m_cloudDirectoryByAppId.value(game.appId).trimmed();
+    if (!cachedDirectory.isEmpty()
+        && (cachedDirectory == rootPath
+            || cachedDirectory.startsWith(rootPath + QLatin1Char('/'), Qt::CaseInsensitive))
+        && cachedDirectory.compare(legacyAppDirectory, Qt::CaseInsensitive) != 0) {
+        return cachedDirectory;
+    }
+
+    return preferredDirectory;
 }
 
 QString SteamManager::localDownloadPathForSnapshot(const GameInfo &game, const QString &fileName) const
@@ -3772,10 +3800,11 @@ void SteamManager::startQuarkCookieHealthCheck()
     payload.insert(QStringLiteral("checkedAtUtc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
     payload.insert(QStringLiteral("app"), QStringLiteral("GameSaveCloudQt"));
 
+    const QString healthCheckPath = quarkCookieHealthCheckPath();
     m_logger.info(QStringLiteral("开始夸克 Cookie 健康检查：将写入并读取探针文件 %1")
-                      .arg(quarkCookieHealthCheckPath()));
+                      .arg(healthCheckPath));
     m_quarkGatewayManager.uploadDataFile(
-        quarkCookieHealthCheckPath(),
+        healthCheckPath,
         QJsonDocument(payload).toJson(QJsonDocument::Compact),
         QStringLiteral("quark-cookie-health-upload"));
 }
@@ -3794,7 +3823,8 @@ QString SteamManager::quarkCookieHealthCheckPath() const
         rootPath.chop(1);
     }
 
-    return rootPath + QStringLiteral("/.healthcheck.json");
+    return QStringLiteral("%1/.healthcheck/health-%2.json")
+        .arg(rootPath, QString::number(QDateTime::currentMSecsSinceEpoch()));
 }
 
 bool SteamManager::isQuarkAuthFailureMessage(const QString &message) const

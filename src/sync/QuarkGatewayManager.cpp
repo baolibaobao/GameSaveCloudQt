@@ -5,22 +5,26 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QAuthenticator>
 #include <QBuffer>
+#include <QDirIterator>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
 #include <QSettings>
 #include <QSet>
+#include <QStandardPaths>
 #include <QUrl>
 #include <QUrlQuery>
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "storage/AppSettings.h"
 
@@ -43,7 +47,7 @@ QuarkGatewayManager::QuarkGatewayManager(QObject *parent)
             });
 }
 
-void QuarkGatewayManager::startAndConfigure(const QString &cookie)
+void QuarkGatewayManager::startAndConfigure(const QString &cookie, bool forceStorageUpdate)
 {
     if (m_configuring) {
         emit statusChanged(QStringLiteral("夸克网关正在启动和配置，请等待当前操作完成"));
@@ -62,6 +66,7 @@ void QuarkGatewayManager::startAndConfigure(const QString &cookie)
     }
 
     m_configuring = true;
+    m_forceStorageUpdate = forceStorageUpdate;
     m_loginAttempts = 0;
     m_mountConflictRetries = 0;
     m_adminPassword = loadOrCreateAdminPassword();
@@ -71,6 +76,8 @@ void QuarkGatewayManager::startAndConfigure(const QString &cookie)
         finishFailure(QStringLiteral("无法创建 OpenList 数据目录：%1").arg(dataDirectoryPath()));
         return;
     }
+
+    migrateLegacyDataDirectory();
 
     emit statusChanged(QStringLiteral("正在设置 OpenList 管理员密码"));
     if (!setAdminPassword(m_adminPassword)) {
@@ -320,7 +327,7 @@ QString QuarkGatewayManager::executablePath() const
 
 QString QuarkGatewayManager::dataDirectoryPath() const
 {
-    return QDir::toNativeSeparators(QDir(engineDirectoryPath()).absoluteFilePath(QStringLiteral("data")));
+    return QDir::toNativeSeparators(QDir(appDataRootPath()).absoluteFilePath(QStringLiteral("openlist")));
 }
 
 QString QuarkGatewayManager::findExecutablePath() const
@@ -347,9 +354,101 @@ QString QuarkGatewayManager::engineDirectoryPath() const
     return QDir::toNativeSeparators(QFileInfo(executablePath()).absolutePath());
 }
 
-QString QuarkGatewayManager::configFilePath() const
+QString QuarkGatewayManager::legacyDataDirectoryPath() const
 {
-    return QDir::toNativeSeparators(QDir(dataDirectoryPath()).absoluteFilePath(QStringLiteral("config.json")));
+    return QDir::toNativeSeparators(QDir(engineDirectoryPath()).absoluteFilePath(QStringLiteral("data")));
+}
+
+QString QuarkGatewayManager::appDataRootPath() const
+{
+#ifdef Q_OS_WIN
+    const QString roamingPath = qEnvironmentVariable("APPDATA").trimmed();
+    if (!roamingPath.isEmpty()) {
+        return QDir::toNativeSeparators(QDir(roamingPath).absoluteFilePath(QStringLiteral("GameSaveCloudQt")));
+    }
+#endif
+
+    QString appDataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appDataPath.trimmed().isEmpty()) {
+        appDataPath = QDir::home().absoluteFilePath(QStringLiteral(".GameSaveCloudQt"));
+    }
+
+    return QDir::toNativeSeparators(appDataPath);
+}
+
+bool QuarkGatewayManager::migrateLegacyDataDirectory()
+{
+    const QString sourcePath = legacyDataDirectoryPath();
+    const QString targetPath = dataDirectoryPath();
+    if (QDir::cleanPath(sourcePath).compare(QDir::cleanPath(targetPath), Qt::CaseInsensitive) == 0) {
+        return false;
+    }
+
+    const QDir sourceDir(sourcePath);
+    if (!sourceDir.exists()) {
+        return false;
+    }
+
+    QDir targetDir(targetPath);
+    const bool targetHasOpenListData = QFileInfo::exists(targetDir.absoluteFilePath(QStringLiteral("data.db")))
+                                       || QFileInfo::exists(targetDir.absoluteFilePath(QStringLiteral("config.json")));
+    if (targetHasOpenListData) {
+        return false;
+    }
+
+    if (!targetDir.exists() && !targetDir.mkpath(QStringLiteral("."))) {
+        emit statusChanged(QStringLiteral("OpenList 固定数据目录创建失败，无法迁移旧数据"));
+        return false;
+    }
+
+    const bool copied = copyDirectoryContents(sourcePath, targetPath);
+    if (copied) {
+        emit statusChanged(QStringLiteral("已迁移旧 OpenList 数据到固定目录"));
+    }
+    return copied;
+}
+
+bool QuarkGatewayManager::copyDirectoryContents(const QString &sourcePath, const QString &targetPath) const
+{
+    const QDir sourceDir(sourcePath);
+    if (!sourceDir.exists()) {
+        return false;
+    }
+
+    QDir targetDir(targetPath);
+    if (!targetDir.exists() && !targetDir.mkpath(QStringLiteral("."))) {
+        return false;
+    }
+
+    QDirIterator iterator(sourcePath, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        const QString sourceItemPath = iterator.next();
+        const QString relativePath = sourceDir.relativeFilePath(sourceItemPath);
+        const QString targetItemPath = targetDir.absoluteFilePath(relativePath);
+        const QFileInfo sourceInfo(sourceItemPath);
+
+        if (sourceInfo.isDir()) {
+            if (!QDir().mkpath(targetItemPath)) {
+                return false;
+            }
+            continue;
+        }
+
+        const QFileInfo targetInfo(targetItemPath);
+        if (!QDir().mkpath(targetInfo.absolutePath())) {
+            return false;
+        }
+
+        if (QFileInfo::exists(targetItemPath)) {
+            continue;
+        }
+
+        if (!QFile::copy(sourceItemPath, targetItemPath)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 QString QuarkGatewayManager::loadOrCreateAdminPassword()
@@ -382,8 +481,8 @@ bool QuarkGatewayManager::setAdminPassword(const QString &password)
         QStringLiteral("admin"),
         QStringLiteral("set"),
         password,
-        QStringLiteral("--config"),
-        configFilePath()
+        QStringLiteral("--data"),
+        dataDirectoryPath()
     });
     process.setWorkingDirectory(engineDirectoryPath());
     process.start();
@@ -403,8 +502,9 @@ void QuarkGatewayManager::startProcess()
     m_process.setProgram(executablePath());
     m_process.setArguments({
         QStringLiteral("server"),
-        QStringLiteral("--config"),
-        configFilePath()
+        QStringLiteral("--data"),
+        dataDirectoryPath(),
+        QStringLiteral("--log-std")
     });
     m_process.setWorkingDirectory(engineDirectoryPath());
     m_process.setProcessChannelMode(QProcess::MergedChannels);
@@ -468,16 +568,26 @@ void QuarkGatewayManager::configureStorage(const QString &token)
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
 
-        int existingStorageId = 0;
+        QJsonObject existingStorage;
         if (error == QNetworkReply::NoError) {
-            existingStorageId = storageIdFromListPayload(payload);
+            existingStorage = quarkStorageFromListPayload(payload);
+        }
+
+        const int existingStorageId = existingStorage.value(QStringLiteral("id")).toInt();
+        const QString status = existingStorage.value(QStringLiteral("status")).toString().trimmed();
+        const bool storageLooksHealthy = status.isEmpty()
+                                         || status.compare(QStringLiteral("work"), Qt::CaseInsensitive) == 0;
+        if (existingStorageId > 0 && !m_forceStorageUpdate && storageLooksHealthy) {
+            emit statusChanged(QStringLiteral("已复用本地 OpenList 夸克挂载"));
+            ensureSyncDirectory(token);
+            return;
         }
 
         createOrUpdateStorage(token, existingStorageId);
     });
 }
 
-int QuarkGatewayManager::storageIdFromListPayload(const QByteArray &payload) const
+QJsonObject QuarkGatewayManager::quarkStorageFromListPayload(const QByteArray &payload) const
 {
     const QJsonObject root = QJsonDocument::fromJson(payload).object();
     const QJsonObject data = root.value(QStringLiteral("data")).toObject();
@@ -493,18 +603,23 @@ int QuarkGatewayManager::storageIdFromListPayload(const QByteArray &payload) con
     for (const QJsonArray &array : candidateArrays) {
         for (const QJsonValue &value : array) {
             const QJsonObject item = value.toObject();
+            const QString driver = item.value(QStringLiteral("driver")).toString().trimmed();
+            if (!driver.isEmpty() && driver.compare(QStringLiteral("Quark"), Qt::CaseInsensitive) != 0) {
+                continue;
+            }
+
             QString mountPath = item.value(QStringLiteral("mount_path")).toString().trimmed();
             if (!mountPath.startsWith(QLatin1Char('/'))) {
                 mountPath.prepend(QLatin1Char('/'));
             }
 
             if (mountPath.compare(QStringLiteral("/Quark"), Qt::CaseInsensitive) == 0) {
-                return item.value(QStringLiteral("id")).toInt();
+                return item;
             }
         }
     }
 
-    return 0;
+    return {};
 }
 
 void QuarkGatewayManager::createOrUpdateStorage(const QString &token, int existingStorageId)
@@ -1256,6 +1371,32 @@ void QuarkGatewayManager::mergeSnapshotManifestWithDirectoryListing(
             manifest.insert(QStringLiteral("schemaVersion"), 1);
         }
 
+        const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+        QJsonArray content = data.value(QStringLiteral("content")).toArray();
+        if (content.isEmpty()) {
+            content = data.value(QStringLiteral("items")).toArray();
+        }
+
+        QSet<QString> directoryFileKeys;
+        QHash<QString, QJsonObject> directoryItemsByFileKey;
+        for (const QJsonValue &value : content) {
+            const QJsonObject item = value.toObject();
+            QString fileName = item.value(QStringLiteral("name")).toString().trimmed();
+            if (fileName.isEmpty()) {
+                fileName = item.value(QStringLiteral("filename")).toString().trimmed();
+            }
+            if (!fileName.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+                continue;
+            }
+
+            const QString fileKey = fileName.toCaseFolded();
+            if (directoryFileKeys.contains(fileKey)) {
+                continue;
+            }
+            directoryFileKeys.insert(fileKey);
+            directoryItemsByFileKey.insert(fileKey, item);
+        }
+
         QSet<QString> seenFileNames;
         QList<QJsonObject> mergedSnapshots;
         const QJsonArray manifestSnapshots = manifest.value(QStringLiteral("snapshots")).toArray();
@@ -1276,35 +1417,25 @@ void QuarkGatewayManager::mergeSnapshotManifestWithDirectoryListing(
             }
 
             const QString fileKey = fileName.toCaseFolded();
+            if (!directoryFileKeys.contains(fileKey) || seenFileNames.contains(fileKey)) {
+                continue;
+            }
+            seenFileNames.insert(fileKey);
+            snapshot.insert(QStringLiteral("remotePath"), remoteDirectory + QLatin1Char('/') + fileName);
+            mergedSnapshots.append(snapshot);
+        }
+
+        for (const QString &fileKey : std::as_const(directoryFileKeys)) {
             if (seenFileNames.contains(fileKey)) {
                 continue;
             }
             seenFileNames.insert(fileKey);
-            mergedSnapshots.append(snapshot);
-        }
 
-        const QJsonObject data = root.value(QStringLiteral("data")).toObject();
-        QJsonArray content = data.value(QStringLiteral("content")).toArray();
-        if (content.isEmpty()) {
-            content = data.value(QStringLiteral("items")).toArray();
-        }
-
-        for (const QJsonValue &value : content) {
-            const QJsonObject item = value.toObject();
+            const QJsonObject item = directoryItemsByFileKey.value(fileKey);
             QString fileName = item.value(QStringLiteral("name")).toString().trimmed();
             if (fileName.isEmpty()) {
                 fileName = item.value(QStringLiteral("filename")).toString().trimmed();
             }
-            if (!fileName.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
-                continue;
-            }
-
-            const QString fileKey = fileName.toCaseFolded();
-            if (seenFileNames.contains(fileKey)) {
-                continue;
-            }
-            seenFileNames.insert(fileKey);
-
             QJsonObject snapshot;
             snapshot.insert(QStringLiteral("fileName"), fileName);
             snapshot.insert(QStringLiteral("remotePath"), remoteDirectory + QLatin1Char('/') + fileName);

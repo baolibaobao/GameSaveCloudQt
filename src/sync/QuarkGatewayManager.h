@@ -25,7 +25,7 @@ class QuarkGatewayManager : public QObject
 public:
     explicit QuarkGatewayManager(QObject *parent = nullptr);
 
-    void startAndConfigure(const QString &cookie);
+    void startAndConfigure(const QString &cookie, bool forceStorageUpdate);
     void uploadFileIfMissing(const QString &localFilePath, const QString &remoteDirectoryPath);
     void uploadFileOverwrite(const QString &localFilePath, const QString &remoteDirectoryPath);
     void uploadDataFile(const QString &remoteFilePath, const QByteArray &data, const QString &operationId);
@@ -75,14 +75,17 @@ private:
 
     QString findExecutablePath() const;
     QString engineDirectoryPath() const;
-    QString configFilePath() const;
+    QString legacyDataDirectoryPath() const;
+    QString appDataRootPath() const;
+    bool migrateLegacyDataDirectory();
+    bool copyDirectoryContents(const QString &sourcePath, const QString &targetPath) const;
     QString loadOrCreateAdminPassword();
     bool setAdminPassword(const QString &password);
     void startProcess();
     void pollLogin();
     void login();
     void configureStorage(const QString &token);
-    int storageIdFromListPayload(const QByteArray &payload) const;
+    QJsonObject quarkStorageFromListPayload(const QByteArray &payload) const;
     void createOrUpdateStorage(const QString &token, int existingStorageId);
     void ensureSyncDirectory(const QString &token);
     void emitGatewayReady();
@@ -175,6 +178,7 @@ private:
     int m_loginAttempts = 0;
     int m_mountConflictRetries = 0;
     bool m_configuring = false;
+    bool m_forceStorageUpdate = false;
     QQueue<UploadRequest> m_uploadQueue;
     bool m_uploadInProgress = false;
     QQueue<QPair<QString, QString>> m_downloadQueue;
