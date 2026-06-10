@@ -18,6 +18,16 @@ ApplicationWindow {
     color: "transparent"
     font.family: "Segoe UI Variable"
 
+    onClosing: function(close) {
+        if (trayController && trayController.available && !trayController.quitRequested) {
+            close.accepted = false;
+            root.hide();
+            trayController.notifyHiddenToTray();
+        } else if (trayController && !trayController.quitRequested) {
+            trayController.requestQuit();
+        }
+    }
+
     property bool darkMode: false
     readonly property string appFontFamily: "Segoe UI Variable"
     readonly property color backgroundColor: darkMode ? "#101722" : "#F5F7FB"
@@ -406,6 +416,19 @@ ApplicationWindow {
         function onAutoSyncSettingsChanged() {
             root.autoSyncRevision += 1;
             root.syncSelectedGame();
+        }
+    }
+
+    Connections {
+        target: trayController
+
+        function onShowMainWindowRequested() {
+            if (root.visibility === Window.Minimized) {
+                root.showNormal();
+            }
+            root.show();
+            root.raise();
+            root.requestActivate();
         }
     }
 

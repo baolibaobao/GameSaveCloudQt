@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickDialogs2 Network)
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickDialogs2 Network Widgets)
 
 qt_add_executable(GameSaveCloudQt
     src/main.cpp
@@ -60,6 +60,8 @@ qt_add_executable(GameSaveCloudQt
     src/sync/WebDavClient.cpp
     src/sync/QuarkGatewayManager.h
     src/sync/QuarkGatewayManager.cpp
+    src/tray/TrayController.h
+    src/tray/TrayController.cpp
     src/steam/SteamMetadataClient.h
     src/steam/SteamMetadataClient.cpp
     src/SteamManager.h
@@ -96,6 +98,7 @@ target_link_libraries(GameSaveCloudQt
         Qt6::Qml
         Qt6::QuickDialogs2
         Qt6::Network
+        Qt6::Widgets
 )
 
 target_compile_options(GameSaveCloudQt
