@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/assets">
+        <file alias="icons/GameSaveCloudlogo.png">icons/GameSaveCloudlogo.png</file>
+        <file alias="icons/GameSaveCloudIcon.png">icons/GameSaveCloudIcon.png</file>
+        <file alias="icons/GameSaveCloud.ico">icons/GameSaveCloud.ico</file>
+    </qresource>
+</RCC>

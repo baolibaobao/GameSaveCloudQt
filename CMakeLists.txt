@@ -14,6 +14,8 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickDialogs2 Network Widgets)
 
 qt_add_executable(GameSaveCloudQt
+    assets/app.rc
+    assets/resources.qrc
     src/main.cpp
     src/logging/AppLogger.h
     src/logging/AppLogger.cpp

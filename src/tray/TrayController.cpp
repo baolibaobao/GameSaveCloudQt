@@ -27,7 +27,8 @@ TrayController::TrayController(QObject *parent)
                 }
             });
 
-    m_trayIcon.setIcon(createFallbackIcon());
+    const QIcon appIcon = QApplication::windowIcon();
+    m_trayIcon.setIcon(appIcon.isNull() ? createFallbackIcon() : appIcon);
     m_trayIcon.setToolTip(QStringLiteral("GameSaveCloud-Qt 正在后台监控游戏存档"));
     m_trayIcon.setContextMenu(m_menu);
 

@@ -551,6 +551,7 @@ ApplicationWindow {
                 accentColor: root.accentColor
                 fontFamily: root.appFontFamily
                 appTitle: root.title
+                appIconSource: "qrc:/assets/icons/GameSaveCloudIcon.png"
                 cornerRadius: windowShell.radius
             }
 

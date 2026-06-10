@@ -13,6 +13,7 @@ Rectangle {
     property color accentColor: "#0078D4"
     property string fontFamily: "Segoe UI Variable"
     property string appTitle: "GameSaveCloud-Qt"
+    property url appIconSource: ""
     property int cornerRadius: 0
 
     implicitHeight: 38
@@ -49,19 +50,30 @@ Rectangle {
         spacing: 8
 
         Rectangle {
-            Layout.preferredWidth: 18
-            Layout.preferredHeight: 18
-            radius: 5
-            color: control.darkMode ? "#1E293B" : "#EAF4FF"
-            border.width: 1
-            border.color: control.darkMode ? "#334155" : "#CFE5FA"
+            Layout.preferredWidth: 34
+            Layout.preferredHeight: 34
+            radius: 10
+            color: "transparent"
+            border.width: 0
+
+            Image {
+                id: titleIconImage
+                anchors.fill: parent
+                anchors.margins: 0
+                source: control.appIconSource
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+                visible: status === Image.Ready
+            }
 
             Text {
                 anchors.centerIn: parent
                 text: "\uE8B7"
                 color: control.accentColor
                 font.family: "Segoe MDL2 Assets"
-                font.pixelSize: 10
+                font.pixelSize: 20
+                visible: titleIconImage.status !== Image.Ready
             }
         }
 

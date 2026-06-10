@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 
@@ -9,6 +10,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     QApplication::setQuitOnLastWindowClosed(false);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/assets/icons/GameSaveCloudIcon.png")));
 
     QQmlApplicationEngine engine;
     SteamManager steamManager;
