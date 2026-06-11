@@ -6,6 +6,7 @@ GameSaveCloudQt 是一个 Windows 游戏存档云同步工具，目标是自动�
 
 - 自动扫描 Steam 游戏库
 - 获取 Steam 中文游戏资料
+- 从本机 Steam appcache/appinfo.vdf 读取 ufs.savefiles获取存档位置
 - 识别 PCGamingWiki 存档路径
 - 支持手动指定存档目录
 - 创建、恢复、删除本地存档快照
