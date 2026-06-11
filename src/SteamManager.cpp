@@ -139,6 +139,13 @@ SteamManager::SteamManager(QObject *parent)
                     persistManualGameIfPresent(appId);
                     rebuildInstalledGamesFromModel();
                     saveGameMetadataCacheForApp(appId);
+                    if (canSync) {
+                        refreshSnapshotRecordsForGame(
+                            appId,
+                            QStringLiteral("本地快照列表已刷新"),
+                            QStringLiteral("存档目录已识别，已按磁盘实际存在的 zip 文件刷新本地快照记录"),
+                            gameByAppId(appId).snapshotNeedsCreate);
+                    }
                 }
             });
 
@@ -756,6 +763,7 @@ QVariantList SteamManager::scanInstalledGames(bool forceNetworkRefresh)
         resolveSavePathsForGames(scannedGames);
         m_logger.info(QStringLiteral("已触发重新扫描：正在刷新 Steam 元数据和 PCGamingWiki 存档路径"));
     } else {
+        requestMissingStartupDataForGames(scannedGames);
         m_logger.info(QStringLiteral("启动扫描已使用本地游戏数据缓存：命中 %1 个游戏，需要联网更新时请点击重新扫描")
                           .arg(cachedCount));
     }
@@ -946,6 +954,7 @@ void SteamManager::finishInstalledGamesScan()
         resolveSavePathsForGames(scannedGames);
         m_logger.info(QStringLiteral("已触发重新扫描：正在刷新 Steam 元数据和 PCGamingWiki 存档路径"));
     } else {
+        requestMissingStartupDataForGames(scannedGames);
         m_logger.info(QStringLiteral("启动扫描已使用本地游戏数据缓存：命中 %1 个游戏，需要联网更新时请点击重新扫描")
                           .arg(cachedCount));
     }
@@ -2493,6 +2502,60 @@ void SteamManager::resolveSavePathsForGames(const QList<GameInfo> &games)
     m_savePathResolver.setSteamPath(m_steamPath);
     for (const GameInfo &game : games) {
         m_savePathResolver.resolveGameSavePath(game);
+    }
+}
+
+void SteamManager::requestMissingStartupDataForGames(const QList<GameInfo> &games)
+{
+    QList<GameInfo> gamesNeedingMetadata;
+    QList<GameInfo> gamesNeedingSavePath;
+    QSet<QString> metadataAppIds;
+    QSet<QString> savePathAppIds;
+
+    for (const GameInfo &game : games) {
+        const QString appId = game.appId.trimmed();
+        if (!isNumericAppId(appId)) {
+            continue;
+        }
+
+        const QString name = game.name.trimmed();
+        const QString displayName = game.displayName.trimmed();
+        const QString localizedName = game.localizedName.trimmed();
+        const QString metadataStatus = game.metadataStatus.trimmed();
+        const bool needsMetadata = localizedName.isEmpty()
+            || displayName.isEmpty()
+            || (!name.isEmpty() && displayName == name)
+            || metadataStatus.isEmpty()
+            || metadataStatus.contains(QStringLiteral("正在获取资料"));
+        if (needsMetadata && !metadataAppIds.contains(appId)) {
+            metadataAppIds.insert(appId);
+            gamesNeedingMetadata.append(game);
+        }
+
+        const QString savePathStatus = game.savePathStatus.trimmed();
+        const bool hasFinalManualSavePathStatus = savePathStatus.contains(QStringLiteral("已手动指定"))
+            || savePathStatus.contains(QStringLiteral("需用户手动指定"));
+        const bool needsSavePath = game.savePath.trimmed().isEmpty()
+            && !hasFinalManualSavePathStatus
+            && !savePathAppIds.contains(appId);
+        if (needsSavePath) {
+            savePathAppIds.insert(appId);
+            gamesNeedingSavePath.append(game);
+        }
+    }
+
+    if (!gamesNeedingMetadata.isEmpty()) {
+        requestMetadataForGames(gamesNeedingMetadata);
+    }
+
+    if (!gamesNeedingSavePath.isEmpty()) {
+        resolveSavePathsForGames(gamesNeedingSavePath);
+    }
+
+    if (!gamesNeedingMetadata.isEmpty() || !gamesNeedingSavePath.isEmpty()) {
+        m_logger.info(QStringLiteral("启动扫描已补齐缺失游戏数据：中文资料 %1 个，存档路径 %2 个")
+                          .arg(gamesNeedingMetadata.count())
+                          .arg(gamesNeedingSavePath.count()));
     }
 }
 

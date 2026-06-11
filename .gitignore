@@ -2,6 +2,7 @@
 out/
 build/
 cmake-build-*/
+release/
 CMakeFiles/
 CMakeCache.txt
 *.cmake

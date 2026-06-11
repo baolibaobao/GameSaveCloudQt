@@ -186,6 +186,7 @@ private:
     bool saveGameMetadataCacheForApp(const QString &appId);
     void requestMetadataForGames(const QList<GameInfo> &games);
     void resolveSavePathsForGames(const QList<GameInfo> &games);
+    void requestMissingStartupDataForGames(const QList<GameInfo> &games);
     void rebuildInstalledGamesFromModel();
     GameInfo gameByAppId(const QString &appId) const;
     void applySnapshotResult(const QString &appId, const QVariantMap &result);
