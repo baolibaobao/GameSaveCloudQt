@@ -1,8 +1,8 @@
 #define MyAppName "GameSaveCloudQt"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 #define MyAppPublisher "baolibaobao"
 #define MyAppExeName "GameSaveCloudQt.exe"
-#define SourceDir "F:\ruanjian\yuncundang\release\GameSaveCloudQt-0.2.0"
+#define SourceDir "F:\ruanjian\yuncundang\release\GameSaveCloudQt-0.3.0"
 #define OutputDir "F:\ruanjian\yuncundang\release\installer"
 
 [Setup]

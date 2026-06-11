@@ -75,6 +75,23 @@ void SavePathResolver::resolveGameSavePath(const GameInfo &game)
         return;
     }
 
+    const SteamAutoCloudSaveProvider::Result steamCloudResult =
+        m_steamAutoCloudSaveProvider.findSavePath(game, m_steamPath);
+    if (steamCloudResult.found) {
+        const SavePathValidator::Result validation =
+            m_savePathValidator.validate(steamCloudResult.path, game.appId, m_steamPath);
+        const QString detail = QStringLiteral("%1；%2")
+                                   .arg(validation.detail, steamCloudResult.detail);
+        emit savePathResolved(
+            game.appId,
+            steamCloudResult.path,
+            steamCloudResult.source,
+            validation.availability,
+            detail,
+            validation.canSync);
+        return;
+    }
+
     m_pcGamingWikiProvider.requestSavePath(game.appId);
 }
 

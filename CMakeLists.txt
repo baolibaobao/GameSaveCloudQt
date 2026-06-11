@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(GameSaveCloudQt
-    VERSION 0.2.0
+    VERSION 0.3.0
     LANGUAGES CXX
 )
 
@@ -40,6 +40,8 @@ qt_add_executable(GameSaveCloudQt
     src/saves/SavePathResolver.cpp
     src/saves/SavePathValidator.h
     src/saves/SavePathValidator.cpp
+    src/saves/SteamAutoCloudSaveProvider.h
+    src/saves/SteamAutoCloudSaveProvider.cpp
     src/saves/SteamCloudDetector.h
     src/saves/SteamCloudDetector.cpp
     src/snapshots/SaveFileScanner.h

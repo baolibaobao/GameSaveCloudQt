@@ -7,6 +7,7 @@
 #include "PCGamingWikiSaveProvider.h"
 #include "models/GameInfo.h"
 #include "SavePathValidator.h"
+#include "SteamAutoCloudSaveProvider.h"
 #include "storage/SettingsManager.h"
 
 class SavePathResolver : public QObject
@@ -41,6 +42,7 @@ private:
     bool isNumericAppId(const QString &appId) const;
 
     QString m_steamPath;
+    SteamAutoCloudSaveProvider m_steamAutoCloudSaveProvider;
     PCGamingWikiSaveProvider m_pcGamingWikiProvider;
     SavePathValidator m_savePathValidator;
     SettingsManager m_settingsManager;
