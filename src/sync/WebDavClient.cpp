@@ -177,6 +177,10 @@ void WebDavClient::downloadFile(
     }
 
     QNetworkReply *reply = m_network.get(makeRequest(config, remoteUrl(config, remoteFilePath)));
+    connect(reply, &QNetworkReply::downloadProgress, this,
+            [this, remoteFilePath, localFilePath](qint64 bytesReceived, qint64 bytesTotal) {
+                emit fileDownloadProgress(remoteFilePath, localFilePath, bytesReceived, bytesTotal);
+            });
     connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, localFilePath]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QString statusText = httpStatusText(reply);
@@ -497,6 +501,10 @@ void WebDavClient::putFile(
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/zip"));
     QNetworkReply *reply = m_network.put(request, file);
     file->setParent(reply);
+    connect(reply, &QNetworkReply::uploadProgress, this,
+            [this, localFilePath, remoteFilePath](qint64 bytesSent, qint64 bytesTotal) {
+                emit fileUploadProgress(localFilePath, remoteFilePath, bytesSent, bytesTotal);
+            });
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, file, localFilePath, remoteFilePath, uploadState, successMessage]() {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

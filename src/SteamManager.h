@@ -8,6 +8,7 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -24,6 +25,7 @@
 #include "snapshots/SnapshotPreprocessor.h"
 #include "snapshots/SnapshotRestoreManager.h"
 #include "steam/SteamMetadataClient.h"
+#include "sync/ConfigCloudSync.h"
 #include "sync/QuarkGatewayManager.h"
 #include "sync/WebDavClient.h"
 #include "sync/WebDavSettings.h"
@@ -46,6 +48,15 @@ class SteamManager : public QObject
     Q_PROPERTY(QString quarkGatewayStatus READ quarkGatewayStatus NOTIFY quarkGatewayStatusChanged)
     Q_PROPERTY(bool autoSyncEnabled READ autoSyncEnabled NOTIFY autoSyncSettingsChanged)
     Q_PROPERTY(bool launchAtStartup READ launchAtStartup NOTIFY startupSettingsChanged)
+    Q_PROPERTY(bool snapshotUploadInProgress READ snapshotUploadInProgress NOTIFY snapshotTransferProgressChanged)
+    Q_PROPERTY(double snapshotUploadProgress READ snapshotUploadProgress NOTIFY snapshotTransferProgressChanged)
+    Q_PROPERTY(QString snapshotUploadStatus READ snapshotUploadStatus NOTIFY snapshotTransferProgressChanged)
+    Q_PROPERTY(bool snapshotDownloadInProgress READ snapshotDownloadInProgress NOTIFY snapshotTransferProgressChanged)
+    Q_PROPERTY(double snapshotDownloadProgress READ snapshotDownloadProgress NOTIFY snapshotTransferProgressChanged)
+    Q_PROPERTY(QString snapshotDownloadStatus READ snapshotDownloadStatus NOTIFY snapshotTransferProgressChanged)
+    Q_PROPERTY(int runningGameCount READ runningGameCount NOTIFY installedGamesChanged)
+    Q_PROPERTY(int syncableGameCount READ syncableGameCount NOTIFY installedGamesChanged)
+    Q_PROPERTY(int manualSavePathGameCount READ manualSavePathGameCount NOTIFY installedGamesChanged)
     Q_PROPERTY(QVariantList installedGames READ installedGames NOTIFY installedGamesChanged)
     Q_PROPERTY(GameListModel *gameModel READ gameModel CONSTANT)
     Q_PROPERTY(LogListModel *logModel READ logModel CONSTANT)
@@ -67,6 +78,15 @@ public:
     QString quarkGatewayStatus() const;
     bool autoSyncEnabled() const;
     bool launchAtStartup() const;
+    bool snapshotUploadInProgress() const;
+    double snapshotUploadProgress() const;
+    QString snapshotUploadStatus() const;
+    bool snapshotDownloadInProgress() const;
+    double snapshotDownloadProgress() const;
+    QString snapshotDownloadStatus() const;
+    int runningGameCount() const;
+    int syncableGameCount() const;
+    int manualSavePathGameCount() const;
     QVariantList installedGames() const;
     GameListModel *gameModel();
     LogListModel *logModel();
@@ -135,6 +155,7 @@ signals:
     void quarkGatewayStatusChanged();
     void autoSyncSettingsChanged();
     void startupSettingsChanged();
+    void snapshotTransferProgressChanged();
     void installedGamesChanged();
     void cloudSnapshotsChanged(const QString &appId);
     void userAlertRequested(
@@ -154,6 +175,13 @@ private:
     void persistManualGameIfPresent(const QString &appId);
     bool shouldHideSteamApp(const GameInfo &game) const;
     QVariantList scanInstalledGames(bool forceNetworkRefresh);
+    bool showCachedGamesBeforeScan();
+    void scheduleInstalledGamesScan(bool forceNetworkRefresh);
+    void beginInstalledGamesScan(bool forceNetworkRefresh);
+    void processNextInstalledGamesScanBatch();
+    void finishInstalledGamesScan();
+    void scheduleProcessNameRefresh(const QStringList &appIds);
+    void processNextProcessNameRefresh();
     void applyManualSavePaths(QList<GameInfo> &games);
     bool saveGameMetadataCacheForApp(const QString &appId);
     void requestMetadataForGames(const QList<GameInfo> &games);
@@ -166,6 +194,10 @@ private:
         const QString &status,
         const QString &detail,
         bool needsCreate);
+    void scheduleLocalSnapshotRecordsRefresh();
+    void processNextLocalSnapshotRecordsRefresh();
+    void saveGameMetadataCacheDeferred(const QString &appId);
+    void flushDeferredGameMetadataCache();
     void handleSnapshotUploadFinished(
         bool success,
         const QString &localFilePath,
@@ -177,6 +209,16 @@ private:
         const QString &remoteFilePath,
         const QString &localFilePath,
         const QString &message);
+    void handleSnapshotUploadProgress(
+        const QString &localFilePath,
+        const QString &remoteFilePath,
+        qint64 bytesSent,
+        qint64 bytesTotal);
+    void handleSnapshotDownloadProgress(
+        const QString &remoteFilePath,
+        const QString &localFilePath,
+        qint64 bytesReceived,
+        qint64 bytesTotal);
     void handleCloudDataUploadFinished(
         bool success,
         const QString &remoteFilePath,
@@ -204,6 +246,10 @@ private:
     bool downloadSnapshotRecordsForGame(const GameInfo &game, const QVariantList &snapshots);
     void applyCloudRootManifest(const QByteArray &data);
     void applyCloudSnapshotRecordsToModel();
+    void requestConfigCloudSyncDownload();
+    void scheduleConfigCloudSyncUpload();
+    void uploadConfigCloudSync();
+    void applyConfigCloudSync(const QByteArray &data);
     void updateCloudSnapshotStatusForGame(
         const QString &appId,
         const QVariantList &records,
@@ -211,6 +257,7 @@ private:
         const QString &detail);
     QString cloudRootPath() const;
     QString cloudRootManifestPath() const;
+    QString configCloudSyncPath() const;
     QString restoreBackupRootPath() const;
     QString defaultStorageRootPath() const;
     QString storageRootFromSnapshotRoot(const QString &snapshotRootPath) const;
@@ -245,6 +292,18 @@ private:
     QString localDownloadPathForSnapshot(const GameInfo &game, const QString &fileName) const;
     void loadQuarkGatewaySettings();
     void setQuarkGatewayStatus(const QString &status);
+    void refreshCloudManifestFromRemoteInternal(bool forceRefresh);
+    void setSnapshotUploadProgress(bool inProgress, double progress, const QString &status);
+    void setSnapshotDownloadProgress(bool inProgress, double progress, const QString &status);
+    QString transferProgressText(
+        const QString &action,
+        const GameInfo &game,
+        const QString &fileName,
+        int completedCount,
+        int remainingCount,
+        int totalCount,
+        qint64 bytesDone,
+        qint64 bytesTotal) const;
     void startQuarkCookieHealthCheck();
     void startQuarkCookieProbeUpload();
     QString quarkCookieHealthCheckPath() const;
@@ -257,7 +316,6 @@ private:
     bool shouldLogAutomaticCloudRefresh(const QString &appId);
 
     QString m_steamPath;
-    QVariantList m_installedGames;
     GameListModel m_gameModel;
     GameMetadataCache m_gameMetadataCache;
     SteamMetadataClient m_metadataClient;
@@ -269,6 +327,7 @@ private:
     WebDavSettings m_webDavSettings;
     WebDavClient m_webDavClient;
     QuarkGatewayManager m_quarkGatewayManager;
+    ConfigCloudSync m_configCloudSync;
     WebDavConfig m_webDavConfig;
     QString m_webDavConnectionStatus;
     bool m_webDavTesting = false;
@@ -281,16 +340,30 @@ private:
     QSet<QString> m_pendingBatchSnapshotUploadPaths;
     QSet<QString> m_pendingAutoSyncUploadPaths;
     QHash<QString, int> m_pendingSnapshotUploadRemainingByAppId;
+    QHash<QString, int> m_pendingSnapshotUploadTotalByAppId;
     QHash<QString, int> m_pendingSnapshotUploadSuccessByAppId;
     QHash<QString, int> m_pendingSnapshotUploadFailureByAppId;
     QHash<QString, QString> m_pendingSnapshotDownloadAppIds;
     QHash<QString, QVariantMap> m_pendingSnapshotDownloadRecords;
     QSet<QString> m_pendingSnapshotRestoreDownloadPaths;
     QHash<QString, int> m_pendingSnapshotDownloadRemainingByAppId;
+    QHash<QString, int> m_pendingSnapshotDownloadTotalByAppId;
     QHash<QString, int> m_pendingSnapshotDownloadSuccessByAppId;
     QHash<QString, int> m_pendingSnapshotDownloadFailureByAppId;
     QHash<QString, QVariantList> m_cloudSnapshotRecordsByAppId;
     QHash<QString, QString> m_cloudDirectoryByAppId;
+    QTimer m_configCloudSyncUploadTimer;
+    QTimer m_installedGamesScanTimer;
+    QTimer m_localSnapshotRefreshTimer;
+    QTimer m_processNameRefreshTimer;
+    QJsonObject m_configCloudSyncDocument;
+    QJsonObject m_pendingConfigCloudSyncDocument;
+    QStringList m_pendingLocalSnapshotRefreshAppIds;
+    QStringList m_pendingProcessNameRefreshAppIds;
+    QStringList m_pendingSteamManifestPaths;
+    QList<GameInfo> m_pendingInstalledGameScanGames;
+    QStringList m_pendingInstalledGameProcessNameRefreshAppIds;
+    QSet<QString> m_pendingInstalledGameScanSeenAppIds;
     QHash<QString, bool> m_pendingCloudSnapshotRefreshQuietByAppId;
     QHash<QString, QDateTime> m_lastAutomaticCloudRefreshLogByAppId;
     GameIdentityResolver m_gameIdentityResolver;
@@ -300,4 +373,16 @@ private:
     bool m_hasLoggedProcessMonitorIdle = false;
     bool m_cloudManifestLoaded = false;
     bool m_cloudManifestRefreshInFlight = false;
+    int m_installedGamesScanRequestId = 0;
+    bool m_quarkGatewayStartRequestedThisSession = false;
+    bool m_installedGamesScanForceNetworkRefresh = false;
+    bool m_applyingConfigCloudSync = false;
+    bool m_deferGameMetadataCacheWrites = false;
+    QSet<QString> m_deferredGameMetadataCacheAppIds;
+    bool m_snapshotUploadInProgress = false;
+    double m_snapshotUploadProgress = 0.0;
+    QString m_snapshotUploadStatus;
+    bool m_snapshotDownloadInProgress = false;
+    double m_snapshotDownloadProgress = 0.0;
+    QString m_snapshotDownloadStatus;
 };

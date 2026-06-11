@@ -40,11 +40,21 @@ signals:
         const QString &remoteFilePath,
         const QString &uploadState,
         const QString &message);
+    void fileUploadProgress(
+        const QString &localFilePath,
+        const QString &remoteFilePath,
+        qint64 bytesSent,
+        qint64 bytesTotal);
     void fileDownloadFinished(
         bool success,
         const QString &remoteFilePath,
         const QString &localFilePath,
         const QString &message);
+    void fileDownloadProgress(
+        const QString &remoteFilePath,
+        const QString &localFilePath,
+        qint64 bytesReceived,
+        qint64 bytesTotal);
 
 private:
     QNetworkRequest makeRequest(const WebDavConfig &config, const QUrl &url) const;

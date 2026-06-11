@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QJsonValue>
 #include <QRegularExpression>
 #include <QSettings>
@@ -18,8 +19,54 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "storage/AppSettings.h"
+
+namespace {
+
+QByteArray comparableConfigCloudSyncDocument(QJsonObject document)
+{
+    document.remove(QStringLiteral("updatedAtUtc"));
+    document.remove(QStringLiteral("deviceName"));
+
+    QList<QJsonObject> games;
+    const QJsonArray gameArray = document.value(QStringLiteral("games")).toArray();
+    games.reserve(gameArray.count());
+    for (const QJsonValue &value : gameArray) {
+        QJsonObject game = value.toObject();
+        game.remove(QStringLiteral("updatedAtUtc"));
+        games.append(game);
+    }
+
+    std::sort(games.begin(), games.end(), [](const QJsonObject &left, const QJsonObject &right) {
+        const QString leftKey = left.value(QStringLiteral("appId")).toString();
+        const QString rightKey = right.value(QStringLiteral("appId")).toString();
+        if (leftKey != rightKey) {
+            return leftKey < rightKey;
+        }
+        return left.value(QStringLiteral("name")).toString() < right.value(QStringLiteral("name")).toString();
+    });
+
+    QJsonArray normalizedGames;
+    for (const QJsonObject &game : std::as_const(games)) {
+        normalizedGames.append(game);
+    }
+    document.insert(QStringLiteral("games"), normalizedGames);
+
+    return QJsonDocument(document).toJson(QJsonDocument::Compact);
+}
+
+bool configCloudSyncDocumentsMatch(const QJsonObject &left, const QJsonObject &right)
+{
+    if (left.isEmpty() || right.isEmpty()) {
+        return false;
+    }
+
+    return comparableConfigCloudSyncDocument(left) == comparableConfigCloudSyncDocument(right);
+}
+
+} // namespace
 
 SteamManager::SteamManager(QObject *parent)
     : QObject(parent)
@@ -36,6 +83,15 @@ SteamManager::SteamManager(QObject *parent)
 
     ensureDefaultStorageRootInitialized();
     alignLogDirectoryWithSnapshotRoot();
+    m_configCloudSyncUploadTimer.setSingleShot(true);
+    m_configCloudSyncUploadTimer.setInterval(2500);
+    connect(&m_configCloudSyncUploadTimer, &QTimer::timeout, this, &SteamManager::uploadConfigCloudSync);
+    m_installedGamesScanTimer.setInterval(12);
+    connect(&m_installedGamesScanTimer, &QTimer::timeout, this, &SteamManager::processNextInstalledGamesScanBatch);
+    m_localSnapshotRefreshTimer.setInterval(20);
+    connect(&m_localSnapshotRefreshTimer, &QTimer::timeout, this, &SteamManager::processNextLocalSnapshotRecordsRefresh);
+    m_processNameRefreshTimer.setInterval(80);
+    connect(&m_processNameRefreshTimer, &QTimer::timeout, this, &SteamManager::processNextProcessNameRefresh);
     m_logger.info(QStringLiteral("程序启动完成，日志系统已初始化，当前日志文件：%1").arg(m_logger.logFilePath()));
 
     connect(&m_metadataClient, &SteamMetadataClient::metadataReady, this,
@@ -228,6 +284,22 @@ SteamManager::SteamManager(QObject *parent)
                 handleSnapshotDownloadFinished(success, remoteFilePath, localFilePath, message);
             });
 
+    connect(&m_webDavClient, &WebDavClient::fileUploadProgress, this,
+            [this](const QString &localFilePath,
+                   const QString &remoteFilePath,
+                   qint64 bytesSent,
+                   qint64 bytesTotal) {
+                handleSnapshotUploadProgress(localFilePath, remoteFilePath, bytesSent, bytesTotal);
+            });
+
+    connect(&m_webDavClient, &WebDavClient::fileDownloadProgress, this,
+            [this](const QString &remoteFilePath,
+                   const QString &localFilePath,
+                   qint64 bytesReceived,
+                   qint64 bytesTotal) {
+                handleSnapshotDownloadProgress(remoteFilePath, localFilePath, bytesReceived, bytesTotal);
+            });
+
     connect(&m_quarkGatewayManager, &QuarkGatewayManager::statusChanged, this,
             [this](const QString &status) {
                 setQuarkGatewayStatus(status);
@@ -248,6 +320,22 @@ SteamManager::SteamManager(QObject *parent)
                    const QString &localFilePath,
                    const QString &message) {
                 handleSnapshotDownloadFinished(success, remoteFilePath, localFilePath, message);
+            });
+
+    connect(&m_quarkGatewayManager, &QuarkGatewayManager::fileUploadProgress, this,
+            [this](const QString &localFilePath,
+                   const QString &remoteFilePath,
+                   qint64 bytesSent,
+                   qint64 bytesTotal) {
+                handleSnapshotUploadProgress(localFilePath, remoteFilePath, bytesSent, bytesTotal);
+            });
+
+    connect(&m_quarkGatewayManager, &QuarkGatewayManager::fileDownloadProgress, this,
+            [this](const QString &remoteFilePath,
+                   const QString &localFilePath,
+                   qint64 bytesReceived,
+                   qint64 bytesTotal) {
+                handleSnapshotDownloadProgress(remoteFilePath, localFilePath, bytesReceived, bytesTotal);
             });
 
     connect(&m_quarkGatewayManager, &QuarkGatewayManager::dataFileUploadFinished, this,
@@ -338,6 +426,7 @@ SteamManager::SteamManager(QObject *parent)
                 m_cloudManifestRefreshInFlight = false;
                 m_cloudDirectoryByAppId.clear();
                 refreshCloudManifestFromRemote();
+                requestConfigCloudSyncDownload();
                 startQuarkCookieHealthCheck();
             });
 
@@ -350,7 +439,11 @@ SteamManager::SteamManager(QObject *parent)
             });
 
     if (!m_quarkCookie.trimmed().isEmpty()) {
-        QTimer::singleShot(0, this, [this]() {
+        QTimer::singleShot(1500, this, [this]() {
+            if (m_quarkGatewayStartRequestedThisSession) {
+                return;
+            }
+            m_quarkGatewayStartRequestedThisSession = true;
             setWebDavTesting(true);
             setWebDavConnectionStatus(QStringLiteral("正在自动连接夸克网盘"));
             setQuarkGatewayStatus(QStringLiteral("已读取本地保存的夸克 Cookie，正在自动启动 OpenList 本机网关"));
@@ -430,9 +523,77 @@ bool SteamManager::launchAtStartup() const
     return m_startupManager.isEnabled();
 }
 
+bool SteamManager::snapshotUploadInProgress() const
+{
+    return m_snapshotUploadInProgress;
+}
+
+double SteamManager::snapshotUploadProgress() const
+{
+    return m_snapshotUploadProgress;
+}
+
+QString SteamManager::snapshotUploadStatus() const
+{
+    return m_snapshotUploadStatus;
+}
+
+bool SteamManager::snapshotDownloadInProgress() const
+{
+    return m_snapshotDownloadInProgress;
+}
+
+double SteamManager::snapshotDownloadProgress() const
+{
+    return m_snapshotDownloadProgress;
+}
+
+QString SteamManager::snapshotDownloadStatus() const
+{
+    return m_snapshotDownloadStatus;
+}
+
+int SteamManager::runningGameCount() const
+{
+    int count = 0;
+    for (const GameInfo &game : m_gameModel.games()) {
+        if (game.runningStatus.contains(QStringLiteral("正在运行"))) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int SteamManager::syncableGameCount() const
+{
+    int count = 0;
+    for (const GameInfo &game : m_gameModel.games()) {
+        if (game.savePathCanSync) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int SteamManager::manualSavePathGameCount() const
+{
+    int count = 0;
+    for (const GameInfo &game : m_gameModel.games()) {
+        if (game.savePathStatus.contains(QStringLiteral("需要用户手动指定"))) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 QVariantList SteamManager::installedGames() const
 {
-    return m_installedGames;
+    QVariantList games;
+    games.reserve(m_gameModel.games().count());
+    for (const GameInfo &game : m_gameModel.games()) {
+        games.append(game.toVariantMap());
+    }
+    return games;
 }
 
 GameListModel *SteamManager::gameModel()
@@ -524,9 +685,11 @@ QVariantList SteamManager::scanInstalledGames(bool forceNetworkRefresh)
 {
     const QString steamRootPath = m_steamPath.isEmpty() ? findSteamPath() : m_steamPath;
     QList<GameInfo> scannedGames;
+    QStringList processNameRefreshAppIds;
     m_logger.info(QStringLiteral("开始扫描本地 Steam 游戏与手动添加游戏"));
 
     QSet<QString> seenAppIds;
+    m_gameMetadataCache.reload();
 
     /*
      * Steam 的每个已安装游戏都会在某个 steamapps 目录下生成：
@@ -555,9 +718,12 @@ QVariantList SteamManager::scanInstalledGames(bool forceNetworkRefresh)
 
             seenAppIds.insert(appId);
             game.libraryPath = QDir::cleanPath(steamAppsDir.absolutePath() + QStringLiteral("/.."));
-            game.processName = guessProcessNameForSteamGame(game);
+            m_gameMetadataCache.applyToGame(game);
+            if (forceNetworkRefresh || game.processName.trimmed().isEmpty()) {
+                processNameRefreshAppIds.append(appId);
+            }
             game.runningStatus = game.processName.isEmpty()
-                                     ? QStringLiteral("未识别到游戏主程序，暂不能监控运行状态")
+                                     ? QStringLiteral("等待后台识别游戏主程序")
                                      : QStringLiteral("等待进程监控");
             scannedGames.append(game);
         }
@@ -569,12 +735,13 @@ QVariantList SteamManager::scanInstalledGames(bool forceNetworkRefresh)
         return QString::localeAwareCompare(left.name, right.name) < 0;
     });
 
-    m_gameMetadataCache.reload();
     const int cachedCount = m_gameMetadataCache.applyToGames(scannedGames);
     applyManualSavePaths(scannedGames);
 
     m_gameModel.setGames(scannedGames);
     applyCloudSnapshotRecordsToModel();
+    scheduleLocalSnapshotRecordsRefresh();
+    scheduleProcessNameRefresh(processNameRefreshAppIds);
     rebuildInstalledGamesFromModel();
     m_processMonitor.setGames(scannedGames);
     m_processMonitor.start();
@@ -594,7 +761,258 @@ QVariantList SteamManager::scanInstalledGames(bool forceNetworkRefresh)
     }
     m_logger.info(QStringLiteral("游戏扫描完成：共发现 %1 个游戏，其中包含 Steam 库游戏和已保存的手动添加游戏").arg(scannedGames.count()));
 
-    return m_installedGames;
+    return installedGames();
+}
+
+bool SteamManager::showCachedGamesBeforeScan()
+{
+    m_gameMetadataCache.reload();
+    QList<GameInfo> cachedGames = m_gameMetadataCache.cachedGames();
+
+    QHash<QString, GameInfo> cachedByAppId;
+    for (const GameInfo &game : std::as_const(cachedGames)) {
+        if (!game.appId.trimmed().isEmpty()) {
+            cachedByAppId.insert(game.appId, game);
+        }
+    }
+
+    QList<GameInfo> displayGames;
+    QSet<QString> seenAppIds;
+    appendManualGames(displayGames, seenAppIds);
+    for (GameInfo &manualGame : displayGames) {
+        const GameInfo cachedGame = cachedByAppId.value(manualGame.appId);
+        if (!cachedGame.isValid()) {
+            continue;
+        }
+
+        m_gameMetadataCache.applyToGame(manualGame);
+        manualGame.isManualGame = true;
+        if (manualGame.executablePath.trimmed().isEmpty()) {
+            manualGame.executablePath = cachedGame.executablePath;
+        }
+    }
+
+    for (const GameInfo &game : std::as_const(cachedGames)) {
+        if (game.appId.trimmed().isEmpty() || seenAppIds.contains(game.appId)) {
+            continue;
+        }
+        seenAppIds.insert(game.appId);
+        displayGames.append(game);
+    }
+
+    if (displayGames.isEmpty()) {
+        return false;
+    }
+
+    QList<GameInfo> uniqueGames;
+    QSet<QString> uniqueSeenAppIds;
+    uniqueGames.reserve(displayGames.count());
+    for (GameInfo game : displayGames) {
+        if (game.appId.trimmed().isEmpty() || uniqueSeenAppIds.contains(game.appId)) {
+            continue;
+        }
+        uniqueSeenAppIds.insert(game.appId);
+        if (game.displayName.trimmed().isEmpty()) {
+            game.displayName = game.name;
+        }
+        uniqueGames.append(game);
+    }
+
+    if (uniqueGames.isEmpty()) {
+        return false;
+    }
+
+    m_gameModel.setGames(uniqueGames);
+    applyCloudSnapshotRecordsToModel();
+    rebuildInstalledGamesFromModel();
+    m_processMonitor.setGames(uniqueGames);
+    m_processMonitor.start();
+    m_logger.info(QStringLiteral("已先显示本地缓存游戏库：%1 个游戏，后台继续刷新真实安装状态")
+                      .arg(uniqueGames.count()));
+    return true;
+}
+
+void SteamManager::scheduleInstalledGamesScan(bool forceNetworkRefresh)
+{
+    const int requestId = ++m_installedGamesScanRequestId;
+    QTimer::singleShot(forceNetworkRefresh ? 0 : 350, this, [this, forceNetworkRefresh, requestId]() {
+        if (requestId != m_installedGamesScanRequestId) {
+            return;
+        }
+        beginInstalledGamesScan(forceNetworkRefresh);
+    });
+}
+
+void SteamManager::beginInstalledGamesScan(bool forceNetworkRefresh)
+{
+    m_installedGamesScanTimer.stop();
+    m_pendingSteamManifestPaths.clear();
+    m_pendingInstalledGameScanGames.clear();
+    m_pendingInstalledGameProcessNameRefreshAppIds.clear();
+    m_pendingInstalledGameScanSeenAppIds.clear();
+    m_installedGamesScanForceNetworkRefresh = forceNetworkRefresh;
+
+    const QString steamRootPath = m_steamPath.isEmpty() ? findSteamPath() : m_steamPath;
+    m_logger.info(QStringLiteral("开始分批扫描本地 Steam 游戏与手动添加游戏"));
+    m_gameMetadataCache.reload();
+
+    for (const QString &steamAppsPath : steamRootPath.isEmpty() ? QStringList() : steamAppsDirectories(steamRootPath)) {
+        const QDir steamAppsDir(steamAppsPath);
+        const QStringList manifestFiles = steamAppsDir.entryList(
+            {QStringLiteral("appmanifest_*.acf")},
+            QDir::Files | QDir::Readable,
+            QDir::Name);
+
+        for (const QString &manifestFile : manifestFiles) {
+            m_pendingSteamManifestPaths.append(steamAppsDir.absoluteFilePath(manifestFile));
+        }
+    }
+
+    if (m_pendingSteamManifestPaths.isEmpty()) {
+        finishInstalledGamesScan();
+        return;
+    }
+
+    m_installedGamesScanTimer.start();
+}
+
+void SteamManager::processNextInstalledGamesScanBatch()
+{
+    constexpr int maxManifestsPerBatch = 8;
+    int processedCount = 0;
+
+    while (!m_pendingSteamManifestPaths.isEmpty() && processedCount < maxManifestsPerBatch) {
+        const QString manifestPath = m_pendingSteamManifestPaths.takeFirst();
+        GameInfo game = parseAcfFile(manifestPath);
+        const QString appId = game.appId;
+
+        if (!appId.isEmpty()
+            && !m_pendingInstalledGameScanSeenAppIds.contains(appId)
+            && !shouldHideSteamApp(game)) {
+            const QDir steamAppsDir = QFileInfo(manifestPath).absoluteDir();
+            m_pendingInstalledGameScanSeenAppIds.insert(appId);
+            game.libraryPath = QDir::cleanPath(steamAppsDir.absolutePath() + QStringLiteral("/.."));
+            m_gameMetadataCache.applyToGame(game);
+            if (m_installedGamesScanForceNetworkRefresh || game.processName.trimmed().isEmpty()) {
+                m_pendingInstalledGameProcessNameRefreshAppIds.append(appId);
+            }
+            game.runningStatus = game.processName.isEmpty()
+                                     ? QStringLiteral("等待后台识别游戏主程序")
+                                     : QStringLiteral("等待进程监控");
+            m_pendingInstalledGameScanGames.append(game);
+        }
+
+        ++processedCount;
+    }
+
+    if (m_pendingSteamManifestPaths.isEmpty()) {
+        finishInstalledGamesScan();
+    }
+}
+
+void SteamManager::finishInstalledGamesScan()
+{
+    m_installedGamesScanTimer.stop();
+
+    QList<GameInfo> scannedGames = m_pendingInstalledGameScanGames;
+    QSet<QString> seenAppIds = m_pendingInstalledGameScanSeenAppIds;
+    const QStringList processNameRefreshAppIds = m_pendingInstalledGameProcessNameRefreshAppIds;
+    const bool forceNetworkRefresh = m_installedGamesScanForceNetworkRefresh;
+
+    appendManualGames(scannedGames, seenAppIds);
+
+    std::sort(scannedGames.begin(), scannedGames.end(), [](const GameInfo &left, const GameInfo &right) {
+        return QString::localeAwareCompare(left.name, right.name) < 0;
+    });
+
+    const int cachedCount = m_gameMetadataCache.applyToGames(scannedGames);
+    applyManualSavePaths(scannedGames);
+
+    m_gameModel.setGames(scannedGames);
+    applyCloudSnapshotRecordsToModel();
+    scheduleLocalSnapshotRecordsRefresh();
+    scheduleProcessNameRefresh(processNameRefreshAppIds);
+    rebuildInstalledGamesFromModel();
+    m_processMonitor.setGames(scannedGames);
+    m_processMonitor.start();
+    if (!m_hasLoggedProcessMonitorIdle
+        && m_processMonitor.trackedGameCount() > 0
+        && !m_processMonitor.hasRunningGames()) {
+        m_logger.info(QStringLiteral("游戏进程监控正常运行，当前未检测到正在运行的游戏"));
+        m_hasLoggedProcessMonitorIdle = true;
+    }
+    if (forceNetworkRefresh) {
+        requestMetadataForGames(scannedGames);
+        resolveSavePathsForGames(scannedGames);
+        m_logger.info(QStringLiteral("已触发重新扫描：正在刷新 Steam 元数据和 PCGamingWiki 存档路径"));
+    } else {
+        m_logger.info(QStringLiteral("启动扫描已使用本地游戏数据缓存：命中 %1 个游戏，需要联网更新时请点击重新扫描")
+                          .arg(cachedCount));
+    }
+    m_logger.info(QStringLiteral("游戏扫描完成：共发现 %1 个游戏，其中包含 Steam 库游戏和已保存的手动添加游戏")
+                      .arg(scannedGames.count()));
+
+    m_pendingSteamManifestPaths.clear();
+    m_pendingInstalledGameScanGames.clear();
+    m_pendingInstalledGameProcessNameRefreshAppIds.clear();
+    m_pendingInstalledGameScanSeenAppIds.clear();
+    m_installedGamesScanForceNetworkRefresh = false;
+}
+
+void SteamManager::scheduleProcessNameRefresh(const QStringList &appIds)
+{
+    m_pendingProcessNameRefreshAppIds.clear();
+    QSet<QString> seen;
+    for (const QString &appId : appIds) {
+        const QString cleanAppId = appId.trimmed();
+        if (cleanAppId.isEmpty() || seen.contains(cleanAppId)) {
+            continue;
+        }
+        seen.insert(cleanAppId);
+        m_pendingProcessNameRefreshAppIds.append(cleanAppId);
+    }
+
+    if (m_pendingProcessNameRefreshAppIds.isEmpty()) {
+        return;
+    }
+
+    m_processNameRefreshTimer.start();
+}
+
+void SteamManager::processNextProcessNameRefresh()
+{
+    if (m_pendingProcessNameRefreshAppIds.isEmpty()) {
+        m_processNameRefreshTimer.stop();
+        return;
+    }
+
+    const QString appId = m_pendingProcessNameRefreshAppIds.takeFirst();
+    GameInfo game = gameByAppId(appId);
+    if (!game.isValid() || game.isManualGame) {
+        return;
+    }
+
+    const QString processName = guessProcessNameForSteamGame(game);
+    if (!processName.trimmed().isEmpty() && game.processName != processName) {
+        game.processName = processName;
+        game.runningStatus = QStringLiteral("等待进程监控");
+        m_gameModel.upsertGame(game);
+        m_gameMetadataCache.saveGame(game);
+        rebuildInstalledGamesFromModel();
+        m_processMonitor.setGames(m_gameModel.games());
+        m_processMonitor.start();
+        m_logger.info(QStringLiteral("后台识别游戏主程序完成：%1，进程：%2")
+                          .arg(game.displayName, processName));
+    } else if (processName.trimmed().isEmpty() && game.processName.trimmed().isEmpty()) {
+        game.runningStatus = QStringLiteral("未识别到游戏主程序，暂不能监控运行状态");
+        m_gameModel.upsertGame(game);
+        m_gameMetadataCache.saveGame(game);
+        rebuildInstalledGamesFromModel();
+    }
+
+    if (m_pendingProcessNameRefreshAppIds.isEmpty()) {
+        m_processNameRefreshTimer.stop();
+    }
 }
 
 QVariantList SteamManager::getInstalledGames()
@@ -604,12 +1022,13 @@ QVariantList SteamManager::getInstalledGames()
 
 void SteamManager::loadInstalledGames()
 {
-    scanInstalledGames(false);
+    showCachedGamesBeforeScan();
+    scheduleInstalledGamesScan(false);
 }
 
 void SteamManager::refreshInstalledGames()
 {
-    scanInstalledGames(true);
+    scheduleInstalledGamesScan(true);
 }
 
 bool SteamManager::setManualSavePath(const QString &appId, const QUrl &folderUrl)
@@ -638,6 +1057,7 @@ bool SteamManager::addManualGameFromExecutable(const QUrl &executableUrl)
     m_pendingManualGames.insert(game.appId, game);
     m_manualGameManager.saveManualGame(game);
     upsertGameAndRebuild(game);
+    scheduleConfigCloudSyncUpload();
 
     m_pcGamingWikiSearchClient.requestGameSearch(
         game.appId,
@@ -1099,6 +1519,11 @@ bool SteamManager::uploadLatestSnapshotForGame(const QString &appId)
 
 bool SteamManager::uploadAllSnapshotsForGame(const QString &appId)
 {
+    if (m_snapshotUploadInProgress) {
+        m_logger.info(QStringLiteral("快照上传请求已忽略：当前已有上传任务正在进行"));
+        return false;
+    }
+
     const GameInfo game = gameByAppId(appId);
     if (!game.isValid()) {
         return false;
@@ -1134,6 +1559,11 @@ bool SteamManager::downloadLatestSnapshotForGame(const QString &appId)
 
 bool SteamManager::downloadAllSnapshotsForGame(const QString &appId)
 {
+    if (m_snapshotDownloadInProgress) {
+        m_logger.info(QStringLiteral("快照下载请求已忽略：当前已有下载任务正在进行"));
+        return false;
+    }
+
     const GameInfo game = gameByAppId(appId);
     if (!game.isValid()) {
         return false;
@@ -1148,9 +1578,15 @@ bool SteamManager::downloadAllSnapshotsForGame(const QString &appId)
     if (gameManifestPath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
         m_logger.info(QStringLiteral("开始读取游戏完整云端快照索引：%1，路径：%2")
                           .arg(game.displayName, gameManifestPath));
+        setSnapshotDownloadProgress(
+            true,
+            0.0,
+            QStringLiteral("正在下载：读取 %1 的云端快照索引")
+                .arg(game.displayName));
         m_quarkGatewayManager.downloadDataFile(
             gameManifestPath,
-            QStringLiteral("cloud-game-download-all:%1").arg(appId));
+            QStringLiteral("cloud-game-download-all:%1").arg(appId),
+            true);
         return true;
     }
 
@@ -1164,6 +1600,11 @@ bool SteamManager::downloadAllSnapshotsForGame(const QString &appId)
 
 bool SteamManager::uploadSelectedSnapshotForGame(const QString &appId, const QString &snapshotPathOrFileName)
 {
+    if (m_snapshotUploadInProgress) {
+        m_logger.info(QStringLiteral("选中快照上传请求已忽略：当前已有上传任务正在进行"));
+        return false;
+    }
+
     const GameInfo game = gameByAppId(appId);
     if (!game.isValid()) {
         return false;
@@ -1202,6 +1643,13 @@ bool SteamManager::uploadSelectedSnapshotForGame(const QString &appId, const QSt
         const QString remoteDirectory = cloudDirectoryForGame(game);
         m_pendingSnapshotUploadAppIds.insert(uploadPath, appId);
         m_pendingSnapshotUploadFileNames.insert(uploadPath, uploadFileName);
+        m_pendingSnapshotUploadRemainingByAppId[appId] += 1;
+        m_pendingSnapshotUploadTotalByAppId[appId] += 1;
+        setSnapshotUploadProgress(
+            true,
+            0.0,
+            QStringLiteral("正在上传 1/1：%1 · 正在检查云端")
+                .arg(uploadFileName));
         m_logger.info(QStringLiteral("开始覆盖上传选中快照：%1，本地文件：%2，云端目录：%3")
                           .arg(game.displayName, QDir::toNativeSeparators(uploadPath), remoteDirectory));
         if (remoteDirectory.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
@@ -1218,6 +1666,11 @@ bool SteamManager::uploadSelectedSnapshotForGame(const QString &appId, const QSt
 
 bool SteamManager::downloadSelectedSnapshotForGame(const QString &appId, const QString &snapshotFileName)
 {
+    if (m_snapshotDownloadInProgress) {
+        m_logger.info(QStringLiteral("选中快照下载请求已忽略：当前已有下载任务正在进行"));
+        return false;
+    }
+
     const GameInfo game = gameByAppId(appId);
     if (!game.isValid()) {
         return false;
@@ -1260,6 +1713,13 @@ bool SteamManager::downloadSelectedSnapshotForGame(const QString &appId, const Q
         snapshot.insert(QStringLiteral("remotePath"), remotePath);
         m_pendingSnapshotDownloadAppIds.insert(localPath, appId);
         m_pendingSnapshotDownloadRecords.insert(localPath, snapshot);
+        m_pendingSnapshotDownloadRemainingByAppId[appId] += 1;
+        m_pendingSnapshotDownloadTotalByAppId[appId] += 1;
+        setSnapshotDownloadProgress(
+            true,
+            0.0,
+            QStringLiteral("正在下载 1/1：%1 · 等待连接")
+                .arg(fileName));
         m_logger.info(QStringLiteral("开始覆盖下载选中快照：%1，文件：%2，云端路径：%3，本地路径：%4")
                           .arg(game.displayName, fileName, remotePath, QDir::toNativeSeparators(localPath)));
         if (remotePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
@@ -1314,6 +1774,11 @@ bool SteamManager::refreshLocalSnapshotsForGame(const QString &appId)
 
 void SteamManager::refreshCloudManifestFromRemote()
 {
+    refreshCloudManifestFromRemoteInternal(false);
+}
+
+void SteamManager::refreshCloudManifestFromRemoteInternal(bool forceRefresh)
+{
     if (!m_webDavConfig.isValid()) {
         m_logger.warning(QStringLiteral("云端索引读取失败：夸克网盘尚未连接成功"));
         return;
@@ -1327,7 +1792,8 @@ void SteamManager::refreshCloudManifestFromRemote()
     m_logger.info(QStringLiteral("开始读取云端快照索引：%1").arg(cloudRootManifestPath()));
     m_quarkGatewayManager.downloadDataFile(
         cloudRootManifestPath(),
-        QStringLiteral("cloud-root-refresh"));
+        QStringLiteral("cloud-root-refresh"),
+        forceRefresh);
 }
 
 void SteamManager::refreshCloudSnapshotsForGame(const QString &appId)
@@ -1359,7 +1825,7 @@ void SteamManager::refreshCloudSnapshotsForGameInternal(const QString &appId, bo
         if (!quiet) {
             m_logger.info(QStringLiteral("云端根索引尚未读取完成，已暂缓读取游戏快照列表：%1").arg(game.displayName));
         }
-        refreshCloudManifestFromRemote();
+        refreshCloudManifestFromRemoteInternal(!quiet);
         return;
     }
 
@@ -1376,7 +1842,8 @@ void SteamManager::refreshCloudSnapshotsForGameInternal(const QString &appId, bo
                 .arg(shouldLog
                          ? QStringLiteral("cloud-game-list-ui")
                          : QStringLiteral("cloud-game-list-ui-quiet"),
-                     appId));
+                     appId),
+            !quiet);
         return;
     }
 
@@ -1570,6 +2037,7 @@ bool SteamManager::saveQuarkCookieGateway(const QString &cookie)
     setWebDavConnectionStatus(QStringLiteral("正在启动和配置夸克本机网关"));
     setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 已保存，正在启动 OpenList 本机网关"));
     m_logger.info(QStringLiteral("夸克 Cookie 已保存，开始启动 OpenList 本机网关"));
+    m_quarkGatewayStartRequestedThisSession = true;
     m_quarkGatewayManager.startAndConfigure(cleanCookie, true);
     return true;
 }
@@ -1586,6 +2054,7 @@ bool SteamManager::recheckQuarkGatewayHealth()
     setWebDavConnectionStatus(QStringLiteral("正在重新检测夸克网盘连接"));
     setQuarkGatewayStatus(QStringLiteral("正在重新检测 OpenList 本机网关和夸克挂载状态"));
     m_logger.info(QStringLiteral("开始重新检测夸克网盘连接：将复用本地 OpenList 固定数据目录"));
+    m_quarkGatewayStartRequestedThisSession = true;
     m_quarkGatewayManager.startAndConfigure(m_quarkCookie, false);
     return true;
 }
@@ -2001,7 +2470,11 @@ bool SteamManager::saveGameMetadataCacheForApp(const QString &appId)
         return false;
     }
 
-    return m_gameMetadataCache.saveGame(game);
+    const bool saved = m_gameMetadataCache.saveGame(game);
+    if (saved && !m_applyingConfigCloudSync) {
+        scheduleConfigCloudSyncUpload();
+    }
+    return saved;
 }
 
 void SteamManager::requestMetadataForGames(const QList<GameInfo> &games)
@@ -2025,15 +2498,7 @@ void SteamManager::resolveSavePathsForGames(const QList<GameInfo> &games)
 
 void SteamManager::rebuildInstalledGamesFromModel()
 {
-    QVariantList games;
-    for (const GameInfo &game : m_gameModel.games()) {
-        games.append(game.toVariantMap());
-    }
-
-    if (m_installedGames != games) {
-        m_installedGames = games;
-        emit installedGamesChanged();
-    }
+    emit installedGamesChanged();
 }
 
 GameInfo SteamManager::gameByAppId(const QString &appId) const
@@ -2072,6 +2537,7 @@ void SteamManager::applySnapshotResult(const QString &appId, const QVariantMap &
             needsCreate)) {
         persistManualGameIfPresent(appId);
         rebuildInstalledGamesFromModel();
+        saveGameMetadataCacheDeferred(appId);
     }
 }
 
@@ -2108,6 +2574,122 @@ void SteamManager::refreshSnapshotRecordsForGame(
     applySnapshotResult(appId, refreshed);
 }
 
+void SteamManager::scheduleLocalSnapshotRecordsRefresh()
+{
+    if (m_deferGameMetadataCacheWrites || !m_deferredGameMetadataCacheAppIds.isEmpty()) {
+        flushDeferredGameMetadataCache();
+    }
+
+    m_localSnapshotRefreshTimer.stop();
+    m_pendingLocalSnapshotRefreshAppIds.clear();
+    QSet<QString> seen;
+    for (const GameInfo &game : m_gameModel.games()) {
+        const QString appId = game.appId.trimmed();
+        if (!appId.isEmpty() && !seen.contains(appId)) {
+            seen.insert(appId);
+            m_pendingLocalSnapshotRefreshAppIds.append(appId);
+        }
+    }
+
+    if (!m_pendingLocalSnapshotRefreshAppIds.isEmpty()) {
+        m_deferGameMetadataCacheWrites = true;
+        m_deferredGameMetadataCacheAppIds.clear();
+        m_localSnapshotRefreshTimer.start();
+    } else {
+        m_deferGameMetadataCacheWrites = false;
+    }
+}
+
+void SteamManager::processNextLocalSnapshotRecordsRefresh()
+{
+    if (m_pendingLocalSnapshotRefreshAppIds.isEmpty()) {
+        m_localSnapshotRefreshTimer.stop();
+        return;
+    }
+
+    int refreshedCount = 0;
+    int refreshedSnapshotCount = 0;
+    while (!m_pendingLocalSnapshotRefreshAppIds.isEmpty() && refreshedCount < 4) {
+        const QString appId = m_pendingLocalSnapshotRefreshAppIds.takeFirst();
+        const GameInfo game = gameByAppId(appId);
+        if (!game.isValid()) {
+            continue;
+        }
+
+        const int count = m_snapshotPreprocessor.snapshotsForGame(game).count();
+        refreshedSnapshotCount += count;
+        QString status = QStringLiteral("本地快照列表已刷新");
+        QString detail = QStringLiteral("启动扫描时已按磁盘实际存在的 zip 文件刷新，本地快照 %1 个").arg(count);
+        if (count <= 0 && hasDownloadableSnapshot(appId)) {
+            status = QStringLiteral("本地快照 0 个，可从云端下载已上传快照");
+            detail = QStringLiteral("本地快照目录当前没有 zip 文件，但云端索引中存在已上传快照");
+        } else if (count <= 0) {
+            status = QStringLiteral("本地快照 0 个");
+            detail = QStringLiteral("本地快照目录当前没有可用 zip 文件");
+        }
+
+        refreshSnapshotRecordsForGame(appId, status, detail, game.snapshotNeedsCreate);
+        ++refreshedCount;
+    }
+
+    if (m_pendingLocalSnapshotRefreshAppIds.isEmpty()) {
+        m_localSnapshotRefreshTimer.stop();
+        flushDeferredGameMetadataCache();
+        m_logger.info(QStringLiteral("后台本地快照记录刷新完成"));
+    } else if (refreshedCount > 0 && refreshedSnapshotCount > 0) {
+        m_logger.info(QStringLiteral("后台已刷新 %1 个游戏的本地快照记录，本批发现 %2 个快照")
+                          .arg(refreshedCount)
+                          .arg(refreshedSnapshotCount));
+    }
+}
+
+void SteamManager::saveGameMetadataCacheDeferred(const QString &appId)
+{
+    const QString cleanAppId = appId.trimmed();
+    if (cleanAppId.isEmpty()) {
+        return;
+    }
+
+    if (m_deferGameMetadataCacheWrites) {
+        m_deferredGameMetadataCacheAppIds.insert(cleanAppId);
+        return;
+    }
+
+    const GameInfo game = gameByAppId(cleanAppId);
+    if (game.isValid()) {
+        const bool saved = m_gameMetadataCache.saveGame(game);
+        if (saved && !m_applyingConfigCloudSync) {
+            scheduleConfigCloudSyncUpload();
+        }
+    }
+}
+
+void SteamManager::flushDeferredGameMetadataCache()
+{
+    if (!m_deferGameMetadataCacheWrites && m_deferredGameMetadataCacheAppIds.isEmpty()) {
+        return;
+    }
+
+    QList<GameInfo> games;
+    games.reserve(m_deferredGameMetadataCacheAppIds.count());
+    for (const QString &appId : std::as_const(m_deferredGameMetadataCacheAppIds)) {
+        const GameInfo game = gameByAppId(appId);
+        if (game.isValid()) {
+            games.append(game);
+        }
+    }
+
+    if (!games.isEmpty()) {
+        const bool saved = m_gameMetadataCache.saveGames(games);
+        if (saved && !m_applyingConfigCloudSync) {
+            scheduleConfigCloudSyncUpload();
+        }
+    }
+
+    m_deferredGameMetadataCacheAppIds.clear();
+    m_deferGameMetadataCacheWrites = false;
+}
+
 void SteamManager::handleSnapshotUploadFinished(
     bool success,
     const QString &localFilePath,
@@ -2119,10 +2701,23 @@ void SteamManager::handleSnapshotUploadFinished(
     const QString fileName = m_pendingSnapshotUploadFileNames.take(localFilePath);
     const bool isBatchUpload = m_pendingBatchSnapshotUploadPaths.remove(localFilePath) > 0;
     const bool isAutoSyncUpload = m_pendingAutoSyncUploadPaths.remove(localFilePath) > 0;
+    const bool hasTrackedUpload = m_pendingSnapshotUploadRemainingByAppId.value(appId, 0) > 0;
     const GameInfo game = gameByAppId(appId);
 
     if (!game.isValid()) {
         m_logger.warning(QStringLiteral("快照上传结果无法匹配游戏：%1，结果：%2").arg(localFilePath, message));
+        if (hasTrackedUpload) {
+            int remaining = m_pendingSnapshotUploadRemainingByAppId.value(appId, 0) - 1;
+            if (remaining <= 0) {
+                m_pendingSnapshotUploadRemainingByAppId.remove(appId);
+                m_pendingSnapshotUploadTotalByAppId.remove(appId);
+                m_pendingSnapshotUploadSuccessByAppId.remove(appId);
+                m_pendingSnapshotUploadFailureByAppId.remove(appId);
+                setSnapshotUploadProgress(false, 0.0, QStringLiteral("上传已停止：游戏记录已不存在"));
+            } else {
+                m_pendingSnapshotUploadRemainingByAppId.insert(appId, remaining);
+            }
+        }
         return;
     }
 
@@ -2161,11 +2756,11 @@ void SteamManager::handleSnapshotUploadFinished(
             m_logger.info(QStringLiteral("自动同步云端上传完成：%1，状态：%2，云端路径：%3")
                               .arg(game.displayName, uploadState, remoteFilePath));
         }
-        if (isBatchUpload) {
+        if (isBatchUpload || hasTrackedUpload) {
             ++m_pendingSnapshotUploadSuccessByAppId[appId];
         }
     } else {
-        if (isBatchUpload) {
+        if (isBatchUpload || hasTrackedUpload) {
             ++m_pendingSnapshotUploadFailureByAppId[appId];
         }
         const QVariantMap failed = {
@@ -2204,7 +2799,7 @@ void SteamManager::handleSnapshotUploadFinished(
         }
     }
 
-    int remaining = isBatchUpload ? m_pendingSnapshotUploadRemainingByAppId.value(appId, 0) : 0;
+    int remaining = hasTrackedUpload ? m_pendingSnapshotUploadRemainingByAppId.value(appId, 0) : 0;
     if (remaining <= 0) {
         if (success && remoteFilePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
             requestCloudManifestMergeForGame(appId);
@@ -2215,6 +2810,17 @@ void SteamManager::handleSnapshotUploadFinished(
     --remaining;
     if (remaining > 0) {
         m_pendingSnapshotUploadRemainingByAppId.insert(appId, remaining);
+        const int total = std::max(1, m_pendingSnapshotUploadTotalByAppId.value(appId, remaining));
+        const int completed = std::max(0, total - remaining);
+        const int doneCount = m_pendingSnapshotUploadSuccessByAppId.value(appId)
+                              + m_pendingSnapshotUploadFailureByAppId.value(appId);
+        setSnapshotUploadProgress(
+            true,
+            std::clamp(static_cast<double>(completed) / total, 0.0, 1.0),
+            QStringLiteral("正在上传 %1/%2：等待下一个文件 · 已完成 %3 个")
+                .arg(std::min(total, completed + 1))
+                .arg(total)
+                .arg(doneCount));
         refreshSnapshotRecordsForGame(
             appId,
             QStringLiteral("正在上传并补齐云端缺失快照"),
@@ -2224,8 +2830,15 @@ void SteamManager::handleSnapshotUploadFinished(
     }
 
     m_pendingSnapshotUploadRemainingByAppId.remove(appId);
+    m_pendingSnapshotUploadTotalByAppId.remove(appId);
     const int successCount = m_pendingSnapshotUploadSuccessByAppId.take(appId);
     const int failureCount = m_pendingSnapshotUploadFailureByAppId.take(appId);
+    setSnapshotUploadProgress(
+        false,
+        1.0,
+        failureCount <= 0
+            ? QStringLiteral("上传完成：成功 %1 个").arg(successCount)
+            : QStringLiteral("上传完成：成功 %1 个，失败 %2 个").arg(successCount).arg(failureCount));
     refreshSnapshotRecordsForGame(
         appId,
         failureCount <= 0
@@ -2245,6 +2858,82 @@ void SteamManager::handleSnapshotUploadFinished(
     }
 }
 
+void SteamManager::handleSnapshotUploadProgress(
+    const QString &localFilePath,
+    const QString &remoteFilePath,
+    qint64 bytesSent,
+    qint64 bytesTotal)
+{
+    const QString appId = m_pendingSnapshotUploadAppIds.value(localFilePath);
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return;
+    }
+
+    const QString fileName = m_pendingSnapshotUploadFileNames.value(
+        localFilePath,
+        QFileInfo(localFilePath).fileName());
+    const int remaining = std::max(1, m_pendingSnapshotUploadRemainingByAppId.value(appId, 1));
+    const int total = std::max(1, m_pendingSnapshotUploadTotalByAppId.value(appId, remaining));
+    const int completed = std::max(0, total - remaining);
+    const double fileProgress = bytesTotal > 0
+                                    ? std::clamp(static_cast<double>(bytesSent) / static_cast<double>(bytesTotal), 0.0, 1.0)
+                                    : 0.0;
+    const double overallProgress = std::clamp((completed + fileProgress) / total, 0.0, 1.0);
+    setSnapshotUploadProgress(
+        true,
+        overallProgress,
+        transferProgressText(
+            QStringLiteral("上传"),
+            game,
+            fileName,
+            completed,
+            remaining,
+            total,
+            bytesSent,
+            bytesTotal));
+    Q_UNUSED(remoteFilePath);
+}
+
+void SteamManager::handleSnapshotDownloadProgress(
+    const QString &remoteFilePath,
+    const QString &localFilePath,
+    qint64 bytesReceived,
+    qint64 bytesTotal)
+{
+    const QString appId = m_pendingSnapshotDownloadAppIds.value(localFilePath);
+    const GameInfo game = gameByAppId(appId);
+    if (!game.isValid()) {
+        return;
+    }
+
+    const QVariantMap record = m_pendingSnapshotDownloadRecords.value(localFilePath);
+    QString fileName = record.value(QStringLiteral("fileName")).toString().trimmed();
+    if (fileName.isEmpty()) {
+        fileName = QFileInfo(localFilePath).fileName();
+    }
+    const int remaining = std::max(1, m_pendingSnapshotDownloadRemainingByAppId.value(appId, 1));
+    const int total = std::max(1, m_pendingSnapshotDownloadTotalByAppId.value(appId, remaining));
+    const int completed = std::max(0, total - remaining);
+    const double fileProgress = bytesTotal > 0
+                                    ? std::clamp(static_cast<double>(bytesReceived) / static_cast<double>(bytesTotal), 0.0, 1.0)
+                                    : 0.0;
+    const double overallProgress = std::clamp((completed + fileProgress) / total, 0.0, 1.0);
+    setSnapshotDownloadProgress(
+        true,
+        overallProgress,
+        transferProgressText(
+            QStringLiteral("下载"),
+            game,
+            fileName,
+            completed,
+            remaining,
+            total,
+            bytesReceived,
+            bytesTotal));
+    Q_UNUSED(remoteFilePath);
+}
+
 void SteamManager::handleSnapshotDownloadFinished(
     bool success,
     const QString &remoteFilePath,
@@ -2260,6 +2949,18 @@ void SteamManager::handleSnapshotDownloadFinished(
     if (!game.isValid()) {
         m_logger.warning(QStringLiteral("快照下载结果无法匹配游戏：云端路径 %1，本地路径 %2，结果：%3")
                              .arg(remoteFilePath, QDir::toNativeSeparators(localFilePath), message));
+        if (isBatchDownload) {
+            int remaining = m_pendingSnapshotDownloadRemainingByAppId.value(appId, 0) - 1;
+            if (remaining <= 0) {
+                m_pendingSnapshotDownloadRemainingByAppId.remove(appId);
+                m_pendingSnapshotDownloadTotalByAppId.remove(appId);
+                m_pendingSnapshotDownloadSuccessByAppId.remove(appId);
+                m_pendingSnapshotDownloadFailureByAppId.remove(appId);
+                setSnapshotDownloadProgress(false, 0.0, QStringLiteral("下载已停止：游戏记录已不存在"));
+            } else {
+                m_pendingSnapshotDownloadRemainingByAppId.insert(appId, remaining);
+            }
+        }
         return;
     }
 
@@ -2311,8 +3012,15 @@ void SteamManager::handleSnapshotDownloadFinished(
         --remaining;
         if (remaining <= 0) {
             m_pendingSnapshotDownloadRemainingByAppId.remove(appId);
+            m_pendingSnapshotDownloadTotalByAppId.remove(appId);
             const int successCount = m_pendingSnapshotDownloadSuccessByAppId.take(appId);
             const int failureCount = m_pendingSnapshotDownloadFailureByAppId.take(appId);
+            setSnapshotDownloadProgress(
+                false,
+                1.0,
+                failureCount <= 0
+                    ? QStringLiteral("下载完成：成功 %1 个").arg(successCount)
+                    : QStringLiteral("下载完成：成功 %1 个，失败 %2 个").arg(successCount).arg(failureCount));
             refreshSnapshotRecordsForGame(
                 appId,
                 failureCount <= 0
@@ -2329,6 +3037,17 @@ void SteamManager::handleSnapshotDownloadFinished(
         }
 
         m_pendingSnapshotDownloadRemainingByAppId.insert(appId, remaining);
+        const int total = std::max(1, m_pendingSnapshotDownloadTotalByAppId.value(appId, remaining));
+        const int completed = std::max(0, total - remaining);
+        const int doneCount = m_pendingSnapshotDownloadSuccessByAppId.value(appId)
+                              + m_pendingSnapshotDownloadFailureByAppId.value(appId);
+        setSnapshotDownloadProgress(
+            true,
+            std::clamp(static_cast<double>(completed) / total, 0.0, 1.0),
+            QStringLiteral("正在下载 %1/%2：等待下一个文件 · 已完成 %3 个")
+                .arg(std::min(total, completed + 1))
+                .arg(total)
+                .arg(doneCount));
         refreshSnapshotRecordsForGame(
             appId,
             QStringLiteral("正在下载缺失的云端快照"),
@@ -2366,6 +3085,17 @@ void SteamManager::handleCloudDataUploadFinished(
                 setQuarkGatewayStatus(QStringLiteral("夸克网关已连接，健康检查探针写入未完成；若云端快照可读写，可继续使用"));
             }
             m_logger.warning(QStringLiteral("夸克 Cookie 健康检查写入失败：路径：%1，原因：%2").arg(remoteFilePath, message));
+        }
+        return;
+    }
+
+    if (operationId == QStringLiteral("config-sync-upload")) {
+        if (success) {
+            m_configCloudSyncDocument = m_pendingConfigCloudSyncDocument;
+            m_pendingConfigCloudSyncDocument = {};
+            m_logger.info(QStringLiteral("配置云同步已上传：%1").arg(remoteFilePath));
+        } else {
+            m_logger.warning(QStringLiteral("配置云同步上传失败：路径：%1，原因：%2").arg(remoteFilePath, message));
         }
         return;
     }
@@ -2435,6 +3165,21 @@ void SteamManager::handleCloudDataDownloadFinished(
         return;
     }
 
+    if (operationId == QStringLiteral("config-sync-read")) {
+        if (success) {
+            applyConfigCloudSync(data);
+            m_logger.info(QStringLiteral("配置云同步读取完成：%1").arg(remoteFilePath));
+        } else {
+            m_logger.info(QStringLiteral("配置云同步尚未读取到云端文件，将在本地游戏数据更新后创建：%1，原因：%2")
+                              .arg(remoteFilePath, message));
+            if (isQuarkAuthFailureMessage(message)) {
+                setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 鉴权异常：配置云同步读取失败，请在云同步设置中更新 Cookie 后重新连接"));
+            }
+            scheduleConfigCloudSyncUpload();
+        }
+        return;
+    }
+
     if (operationId == QStringLiteral("cloud-root-refresh")) {
         m_cloudManifestRefreshInFlight = false;
         if (success) {
@@ -2471,6 +3216,10 @@ void SteamManager::handleCloudDataDownloadFinished(
             const QJsonObject gameManifest = QJsonDocument::fromJson(data).object();
             const QVariantList cloudRecords = cloudSnapshotRecordsFromGameManifest(gameManifest);
             if (cloudRecords.isEmpty()) {
+                setSnapshotDownloadProgress(
+                    false,
+                    0.0,
+                    QStringLiteral("下载未开始：云端索引没有可下载记录"));
                 m_logger.warning(QStringLiteral("游戏完整云端快照索引没有可下载记录：%1，路径：%2")
                                      .arg(game.displayName, remoteFilePath));
                 updateCloudSnapshotStatusForGame(
@@ -2491,8 +3240,17 @@ void SteamManager::handleCloudDataDownloadFinished(
                               .arg(game.displayName)
                               .arg(cloudRecords.count())
                               .arg(remoteFilePath, message));
-            downloadSnapshotRecordsForGame(game, cloudRecords);
+            if (!downloadSnapshotRecordsForGame(game, cloudRecords)) {
+                setSnapshotDownloadProgress(
+                    false,
+                    0.0,
+                    QStringLiteral("下载未开始：没有可下载的云端快照"));
+            }
         } else {
+            setSnapshotDownloadProgress(
+                false,
+                0.0,
+                QStringLiteral("下载失败：云端索引读取失败"));
             m_logger.warning(QStringLiteral("游戏完整云端快照索引读取失败：%1，路径：%2，原因：%3；已停止使用可能过期的云端摘要记录")
                                  .arg(game.displayName, remoteFilePath, message));
             if (isQuarkAuthFailureMessage(message)) {
@@ -2638,7 +3396,8 @@ void SteamManager::requestCloudManifestMergeForGame(const QString &appId)
     if (gameManifestPath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
         m_quarkGatewayManager.downloadDataFile(
             gameManifestPath,
-            QStringLiteral("cloud-game-merge-read:%1").arg(appId));
+            QStringLiteral("cloud-game-merge-read:%1").arg(appId),
+            true);
         return;
     }
 
@@ -2671,7 +3430,8 @@ void SteamManager::uploadCloudManifestsForGame(const GameInfo &game)
 
     m_quarkGatewayManager.downloadDataFile(
         cloudRootManifestPath(),
-        QStringLiteral("cloud-root-read:%1").arg(appId));
+        QStringLiteral("cloud-root-read:%1").arg(appId),
+        true);
 }
 
 QJsonObject SteamManager::buildGameCloudManifest(const GameInfo &game) const
@@ -2976,6 +3736,12 @@ bool SteamManager::uploadSnapshotRecordsForGame(const GameInfo &game, const QVar
     }
 
     m_pendingSnapshotUploadRemainingByAppId[game.appId] += uploadCheckCount;
+    m_pendingSnapshotUploadTotalByAppId[game.appId] += uploadCheckCount;
+    setSnapshotUploadProgress(
+        true,
+        0.0,
+        QStringLiteral("正在上传 1/%1：等待检查云端")
+            .arg(m_pendingSnapshotUploadTotalByAppId.value(game.appId)));
     refreshSnapshotRecordsForGame(
         game.appId,
         QStringLiteral("正在上传并补齐云端缺失快照"),
@@ -3135,6 +3901,10 @@ bool SteamManager::downloadSnapshotRecordsForGame(const GameInfo &game, const QV
     }
 
     if (validRecordCount <= 0) {
+        setSnapshotDownloadProgress(
+            false,
+            0.0,
+            QStringLiteral("下载未开始：没有有效的云端快照记录"));
         return false;
     }
 
@@ -3152,6 +3922,12 @@ bool SteamManager::downloadSnapshotRecordsForGame(const GameInfo &game, const QV
 
     const int downloadCount = pendingDownloads.count();
     if (downloadCount <= 0) {
+        setSnapshotDownloadProgress(
+            false,
+            1.0,
+            alreadyDownloadingCount > 0
+                ? QStringLiteral("下载进行中：已有文件在下载队列中")
+                : QStringLiteral("下载完成：云端快照已全部存在本地"));
         refreshSnapshotRecordsForGame(
             game.appId,
             alreadyDownloadingCount > 0
@@ -3168,6 +3944,12 @@ bool SteamManager::downloadSnapshotRecordsForGame(const GameInfo &game, const QV
     }
 
     m_pendingSnapshotDownloadRemainingByAppId[game.appId] += downloadCount;
+    m_pendingSnapshotDownloadTotalByAppId[game.appId] += downloadCount;
+    setSnapshotDownloadProgress(
+        true,
+        0.0,
+        QStringLiteral("正在下载 1/%1：等待连接")
+            .arg(m_pendingSnapshotDownloadTotalByAppId.value(game.appId)));
     refreshSnapshotRecordsForGame(
         game.appId,
         QStringLiteral("正在下载缺失的云端快照"),
@@ -3289,6 +4071,130 @@ void SteamManager::applyCloudSnapshotRecordsToModel()
     }
 }
 
+void SteamManager::requestConfigCloudSyncDownload()
+{
+    if (!m_webDavConfig.isValid()) {
+        return;
+    }
+
+    const QString remotePath = configCloudSyncPath();
+    if (!remotePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
+        return;
+    }
+
+    m_quarkGatewayManager.downloadDataFile(
+        remotePath,
+        QStringLiteral("config-sync-read"),
+        true);
+}
+
+void SteamManager::scheduleConfigCloudSyncUpload()
+{
+    if (m_applyingConfigCloudSync || !m_webDavConfig.isValid()) {
+        return;
+    }
+
+    if (!configCloudSyncPath().startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
+        return;
+    }
+
+    if (m_gameModel.games().isEmpty()) {
+        return;
+    }
+
+    m_configCloudSyncUploadTimer.start();
+}
+
+void SteamManager::uploadConfigCloudSync()
+{
+    if (!m_webDavConfig.isValid() || m_gameModel.games().isEmpty()) {
+        return;
+    }
+
+    const QString remotePath = configCloudSyncPath();
+    if (!remotePath.startsWith(QStringLiteral("/Quark"), Qt::CaseInsensitive)) {
+        return;
+    }
+
+    QHash<QString, QString> cloudDirectoriesByAppId;
+    for (const GameInfo &game : m_gameModel.games()) {
+        if (game.appId.trimmed().isEmpty()) {
+            continue;
+        }
+        cloudDirectoriesByAppId.insert(game.appId, cloudDirectoryForGame(game));
+    }
+
+    const QJsonObject nextDocument = m_configCloudSync.buildDocument(
+        m_gameModel.games(),
+        cloudDirectoriesByAppId,
+        m_configCloudSyncDocument);
+
+    if (configCloudSyncDocumentsMatch(nextDocument, m_configCloudSyncDocument)) {
+        m_pendingConfigCloudSyncDocument = {};
+        m_logger.info(QStringLiteral("配置云同步内容未变化，已跳过上传"));
+        return;
+    }
+
+    m_pendingConfigCloudSyncDocument = nextDocument;
+
+    m_quarkGatewayManager.uploadDataFileOverwrite(
+        remotePath,
+        QJsonDocument(m_pendingConfigCloudSyncDocument).toJson(QJsonDocument::Indented),
+        QStringLiteral("config-sync-upload"));
+}
+
+void SteamManager::applyConfigCloudSync(const QByteArray &data)
+{
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        m_logger.warning(QStringLiteral("配置云同步读取失败：JSON 无效，原因：%1").arg(parseError.errorString()));
+        return;
+    }
+
+    const ConfigCloudSyncImportResult result = m_configCloudSync.parseDocument(data);
+    if (!result.valid) {
+        m_logger.warning(QStringLiteral("配置云同步读取失败：%1").arg(result.error));
+        return;
+    }
+
+    m_configCloudSyncDocument = document.object();
+    m_applyingConfigCloudSync = true;
+
+    int cachedCount = 0;
+    int mergedCount = 0;
+    for (const GameInfo &importedGame : result.games) {
+        if (m_gameMetadataCache.saveGame(importedGame)) {
+            ++cachedCount;
+        }
+
+        GameInfo localGame = gameByAppId(importedGame.appId);
+        if (!localGame.isValid()) {
+            continue;
+        }
+
+        if (!m_configCloudSync.mergeImportedGame(importedGame, localGame)) {
+            continue;
+        }
+
+        m_gameModel.upsertGame(localGame);
+        persistManualGameIfPresent(localGame.appId);
+        m_gameMetadataCache.saveGame(localGame);
+        ++mergedCount;
+    }
+
+    if (mergedCount > 0) {
+        m_processMonitor.setGames(m_gameModel.games());
+        m_processMonitor.start();
+        rebuildInstalledGamesFromModel();
+    }
+
+    m_applyingConfigCloudSync = false;
+    m_logger.info(QStringLiteral("配置云同步应用完成：缓存 %1 个游戏，合并本机已存在游戏 %2 个")
+                      .arg(cachedCount)
+                      .arg(mergedCount));
+}
+
 void SteamManager::updateCloudSnapshotStatusForGame(
     const QString &appId,
     const QVariantList &records,
@@ -3331,6 +4237,11 @@ QString SteamManager::cloudRootPath() const
 QString SteamManager::cloudRootManifestPath() const
 {
     return cloudRootPath() + QStringLiteral("/cloud-manifest.json");
+}
+
+QString SteamManager::configCloudSyncPath() const
+{
+    return cloudRootPath() + QStringLiteral("/config/config-sync.json");
 }
 
 QString SteamManager::restoreBackupRootPath() const
@@ -3859,6 +4770,65 @@ void SteamManager::setQuarkGatewayStatus(const QString &status)
 
     m_quarkGatewayStatus = status;
     emit quarkGatewayStatusChanged();
+}
+
+void SteamManager::setSnapshotUploadProgress(bool inProgress, double progress, const QString &status)
+{
+    const double clampedProgress = std::clamp(progress, 0.0, 1.0);
+    if (m_snapshotUploadInProgress == inProgress
+        && qFuzzyCompare(m_snapshotUploadProgress + 1.0, clampedProgress + 1.0)
+        && m_snapshotUploadStatus == status) {
+        return;
+    }
+
+    m_snapshotUploadInProgress = inProgress;
+    m_snapshotUploadProgress = clampedProgress;
+    m_snapshotUploadStatus = status;
+    emit snapshotTransferProgressChanged();
+}
+
+void SteamManager::setSnapshotDownloadProgress(bool inProgress, double progress, const QString &status)
+{
+    const double clampedProgress = std::clamp(progress, 0.0, 1.0);
+    if (m_snapshotDownloadInProgress == inProgress
+        && qFuzzyCompare(m_snapshotDownloadProgress + 1.0, clampedProgress + 1.0)
+        && m_snapshotDownloadStatus == status) {
+        return;
+    }
+
+    m_snapshotDownloadInProgress = inProgress;
+    m_snapshotDownloadProgress = clampedProgress;
+    m_snapshotDownloadStatus = status;
+    emit snapshotTransferProgressChanged();
+}
+
+QString SteamManager::transferProgressText(
+    const QString &action,
+    const GameInfo &game,
+    const QString &fileName,
+    int completedCount,
+    int remainingCount,
+    int totalCount,
+    qint64 bytesDone,
+    qint64 bytesTotal) const
+{
+    const int safeTotal = std::max(1, totalCount);
+    const int currentIndex = std::clamp(completedCount + 1, 1, safeTotal);
+    const int percent = bytesTotal > 0
+                            ? static_cast<int>(std::clamp(
+                                  (static_cast<double>(bytesDone) / static_cast<double>(bytesTotal)) * 100.0,
+                                  0.0,
+                                  100.0))
+                            : 0;
+    const QString cleanFileName = fileName.trimmed().isEmpty()
+                                      ? QStringLiteral("当前文件")
+                                      : fileName.trimmed();
+    const QString fileProgressText = bytesTotal > 0
+                                         ? QStringLiteral("%1%").arg(percent)
+                                         : QStringLiteral("计算中");
+    Q_UNUSED(remainingCount);
+    return QStringLiteral("正在%1 %2/%3：%4 · %5 · %6")
+        .arg(action, QString::number(currentIndex), QString::number(safeTotal), cleanFileName, fileProgressText, game.displayName);
 }
 
 void SteamManager::startQuarkCookieHealthCheck()

@@ -16,6 +16,12 @@ Item {
     property color accentColor: "#0078D4"
     property string pendingRestoreSnapshot: ""
     property string pendingRestoreSnapshotName: ""
+    property bool uploadInProgress: false
+    property real uploadProgress: 0
+    property string uploadStatus: ""
+    property bool downloadInProgress: false
+    property real downloadProgress: 0
+    property string downloadStatus: ""
 
     signal refreshRequested
     signal uploadAllRequested
@@ -40,6 +46,43 @@ Item {
 
     function isLocalMode() {
         return control.mode === "local";
+    }
+
+    function progressVisible() {
+        return (control.isLocalMode() && (control.uploadInProgress || control.uploadStatus.length > 0))
+                || (control.isCloudMode()
+                    && (control.downloadInProgress
+                        || control.downloadStatus.length > 0
+                        || control.uploadInProgress
+                        || control.uploadStatus.length > 0));
+    }
+
+    function progressText() {
+        if (control.isCloudMode()) {
+            if (control.downloadInProgress) {
+                return control.downloadStatus;
+            }
+            if (control.uploadInProgress) {
+                return control.uploadStatus;
+            }
+            return control.downloadStatus.length > 0 ? control.downloadStatus : control.uploadStatus;
+        }
+        return control.uploadStatus;
+    }
+
+    function progressValue() {
+        if (control.isCloudMode()) {
+            if (control.downloadInProgress) {
+                return Math.max(0, Math.min(1, control.downloadProgress));
+            }
+            if (control.uploadInProgress) {
+                return Math.max(0, Math.min(1, control.uploadProgress));
+            }
+            return Math.max(0, Math.min(1, control.downloadStatus.length > 0
+                                        ? control.downloadProgress
+                                        : control.uploadProgress));
+        }
+        return Math.max(0, Math.min(1, control.uploadProgress));
     }
 
     ConfirmDialog {
@@ -94,8 +137,8 @@ Item {
                     height: parent.height
                     kind: "primary"
                     icon: "\uE898"
-                    label: "上传全部快照"
-                    enabled: control.snapshots.length > 0
+                    label: control.uploadInProgress ? "上传中..." : "上传全部快照"
+                    enabled: control.snapshots.length > 0 && !control.uploadInProgress
                     darkMode: control.darkMode
                     accentColor: control.accentColor
                     onClicked: control.uploadAllRequested()
@@ -132,11 +175,57 @@ Item {
                     height: parent.height
                     kind: "primary"
                     icon: "\uE896"
-                    label: "下载全部快照"
-                    enabled: control.snapshots.length > 0
+                    label: control.downloadInProgress ? "下载中..." : "下载全部快照"
+                    enabled: control.snapshots.length > 0 && !control.downloadInProgress
                     darkMode: control.darkMode
                     accentColor: control.accentColor
                     onClicked: control.downloadAllRequested()
+                }
+            }
+        }
+
+        Rectangle {
+            visible: control.progressVisible()
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? 58 : 0
+            radius: 14
+            color: control.darkMode ? "#172030" : "#F7F9FC"
+            border.width: 1
+            border.color: control.darkMode ? "#2A3448" : "#E8EDF5"
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 8
+
+                Text {
+                    Layout.fillWidth: true
+                    text: control.progressText()
+                    color: control.textColor
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 8
+                    radius: 4
+                    color: control.darkMode ? "#263244" : "#E2E8F0"
+                    clip: true
+
+                    Rectangle {
+                        width: parent.width * control.progressValue()
+                        height: parent.height
+                        radius: 4
+                        color: control.accentColor
+
+                        Behavior on width {
+                            NumberAnimation {
+                                duration: 120
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -202,7 +291,8 @@ Item {
                             Layout.preferredHeight: 36
                             kind: "ghost"
                             icon: control.isCloudMode() ? "\uE896" : "\uE898"
-                            label: control.isCloudMode() ? "可选下载" : "可选上传"
+                            label: control.isCloudMode() ? (control.downloadInProgress ? "下载中..." : "可选下载") : (control.uploadInProgress ? "上传中..." : "可选上传")
+                            enabled: control.isCloudMode() ? !control.downloadInProgress : !control.uploadInProgress
                             darkMode: control.darkMode
                             accentColor: control.accentColor
                             labelPixelSize: 12
@@ -243,7 +333,7 @@ Item {
                 description: control.isCloudMode() ? (control.localSnapshotCount > 0 ? "云端还没有这个游戏的备份，可以先把本地快照上传到网盘。" : "当前没有可下载的云端快照，也还没有本地快照可上传。") : (control.isBackupMode() ? "恢复前备份会在每次恢复快照前自动创建，用于在误恢复时回到恢复前状态。" : (control.savePathCanSync ? "这里会保存每一次压缩后的存档版本，先创建一个快照就能开始回档。" : "当前游戏还没有可同步的存档目录，先在设置中指定存档位置。"))
                 actionIcon: control.isCloudMode() ? "\uE898" : (control.isBackupMode() ? "\uE8A5" : "\uE710")
                 actionLabel: control.isCloudMode() ? "上传全部快照" : (control.isBackupMode() ? "打开备份目录" : "创建快照")
-                actionEnabled: control.isCloudMode() ? control.localSnapshotCount > 0 : (control.isBackupMode() ? true : control.savePathCanSync)
+                actionEnabled: control.isCloudMode() ? (control.localSnapshotCount > 0 && !control.uploadInProgress) : (control.isBackupMode() ? true : control.savePathCanSync)
                 darkMode: control.darkMode
                 textColor: control.textColor
                 mutedTextColor: control.mutedTextColor

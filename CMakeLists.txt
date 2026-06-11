@@ -60,6 +60,8 @@ qt_add_executable(GameSaveCloudQt
     src/storage/SettingsManager.cpp
     src/sync/WebDavSettings.h
     src/sync/WebDavSettings.cpp
+    src/sync/ConfigCloudSync.h
+    src/sync/ConfigCloudSync.cpp
     src/system/StartupManager.h
     src/system/StartupManager.cpp
     src/sync/WebDavClient.h

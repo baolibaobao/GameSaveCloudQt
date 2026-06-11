@@ -291,6 +291,14 @@ ApplicationWindow {
         if (root.selectedGameAppId.length === 0) {
             return;
         }
+        if (root.selectedGameIndex >= 0 && root.selectedGameIndex < steamManager.gameModel.count) {
+            var currentGame = steamManager.gameModel.get(root.selectedGameIndex);
+            if (currentGame && currentGame.appId === root.selectedGameAppId) {
+                root.selectedGame = currentGame;
+                root.refreshDetailSnapshots();
+                return;
+            }
+        }
         for (var i = 0; i < steamManager.gameModel.count; ++i) {
             var game = steamManager.gameModel.get(i);
             if (game.appId === root.selectedGameAppId) {
@@ -925,19 +933,19 @@ ApplicationWindow {
                                                 },
                                                 {
                                                     label: "运行中",
-                                                    value: root.runningGameCount(),
+                                                    value: steamManager.runningGameCount,
                                                     color: "#16A34A",
                                                     revision: root.gameStatsRevision
                                                 },
                                                 {
                                                     label: "可同步",
-                                                    value: root.syncableGameCount(),
+                                                    value: steamManager.syncableGameCount,
                                                     color: "#10B981",
                                                     revision: root.gameStatsRevision
                                                 },
                                                 {
                                                     label: "需手动",
-                                                    value: root.manualGameCount(),
+                                                    value: steamManager.manualSavePathGameCount,
                                                     color: "#D97706",
                                                     revision: root.gameStatsRevision
                                                 }
@@ -1886,8 +1894,8 @@ ApplicationWindow {
                                                         Layout.preferredHeight: 46
                                                         kind: "primary"
                                                         icon: "\uE898"
-                                                        label: "上传全部"
-                                                        enabled: root.selectedGameValue("snapshotCount", 0) > 0
+                                                        label: steamManager.snapshotUploadInProgress ? "上传中..." : "上传全部"
+                                                        enabled: root.selectedGameValue("snapshotCount", 0) > 0 && !steamManager.snapshotUploadInProgress
                                                         darkMode: root.darkMode
                                                         accentColor: root.accentColor
                                                         onClicked: steamManager.uploadAllSnapshotsForGame(root.selectedGameAppId)
@@ -1910,8 +1918,8 @@ ApplicationWindow {
                                                         Layout.preferredHeight: 46
                                                         kind: "ghost"
                                                         icon: "\uE896"
-                                                        label: "下载全部"
-                                                        enabled: steamManager.hasDownloadableSnapshot(root.selectedGameAppId)
+                                                        label: steamManager.snapshotDownloadInProgress ? "下载中..." : "下载全部"
+                                                        enabled: steamManager.hasDownloadableSnapshot(root.selectedGameAppId) && !steamManager.snapshotDownloadInProgress
                                                         darkMode: root.darkMode
                                                         accentColor: root.accentColor
                                                         onClicked: steamManager.downloadAllSnapshotsForGame(root.selectedGameAppId)
@@ -2086,6 +2094,9 @@ ApplicationWindow {
                                         textColor: root.textColor
                                         mutedTextColor: root.mutedTextColor
                                         accentColor: root.accentColor
+                                        uploadInProgress: steamManager.snapshotUploadInProgress
+                                        uploadProgress: steamManager.snapshotUploadProgress
+                                        uploadStatus: steamManager.snapshotUploadStatus
 
                                         onRefreshRequested: {
                                             steamManager.refreshLocalSnapshotsForGame(root.selectedGameAppId);
@@ -2118,6 +2129,12 @@ ApplicationWindow {
                                         textColor: root.textColor
                                         mutedTextColor: root.mutedTextColor
                                         accentColor: root.accentColor
+                                        uploadInProgress: steamManager.snapshotUploadInProgress
+                                        uploadProgress: steamManager.snapshotUploadProgress
+                                        uploadStatus: steamManager.snapshotUploadStatus
+                                        downloadInProgress: steamManager.snapshotDownloadInProgress
+                                        downloadProgress: steamManager.snapshotDownloadProgress
+                                        downloadStatus: steamManager.snapshotDownloadStatus
 
                                         onRefreshRequested: steamManager.refreshCloudSnapshotsForGame(root.selectedGameAppId)
                                         onDownloadAllRequested: steamManager.downloadAllSnapshotsForGame(root.selectedGameAppId)

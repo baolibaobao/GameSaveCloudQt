@@ -29,7 +29,8 @@ public:
     void uploadFileIfMissing(const QString &localFilePath, const QString &remoteDirectoryPath);
     void uploadFileOverwrite(const QString &localFilePath, const QString &remoteDirectoryPath);
     void uploadDataFile(const QString &remoteFilePath, const QByteArray &data, const QString &operationId);
-    void downloadDataFile(const QString &remoteFilePath, const QString &operationId);
+    void uploadDataFileOverwrite(const QString &remoteFilePath, const QByteArray &data, const QString &operationId);
+    void downloadDataFile(const QString &remoteFilePath, const QString &operationId, bool forceRefresh = false);
     void downloadFile(const QString &remoteFilePath, const QString &localFilePath);
     void checkStorageHealth(const QString &operationId);
     void checkWebDavDirectory(const QString &remoteDirectoryPath, const QString &operationId);
@@ -48,11 +49,21 @@ signals:
         const QString &remoteFilePath,
         const QString &uploadState,
         const QString &message);
+    void fileUploadProgress(
+        const QString &localFilePath,
+        const QString &remoteFilePath,
+        qint64 bytesSent,
+        qint64 bytesTotal);
     void fileDownloadFinished(
         bool success,
         const QString &remoteFilePath,
         const QString &localFilePath,
         const QString &message);
+    void fileDownloadProgress(
+        const QString &remoteFilePath,
+        const QString &localFilePath,
+        qint64 bytesReceived,
+        qint64 bytesTotal);
     void dataFileUploadFinished(
         bool success,
         const QString &remoteFilePath,
@@ -88,6 +99,7 @@ private:
     QString engineDirectoryPath() const;
     QString legacyDataDirectoryPath() const;
     QString appDataRootPath() const;
+    void cleanupOpenListLogs(int daysToKeep = 3) const;
     bool migrateLegacyDataDirectory();
     bool copyDirectoryContents(const QString &sourcePath, const QString &targetPath) const;
     QString loadOrCreateAdminPassword();
@@ -124,8 +136,13 @@ private:
     void ensureDirectoryBeforeDataUpload(
         const QString &remoteFilePath,
         const QByteArray &data,
-        const QString &operationId);
+        const QString &operationId,
+        bool overwriteExistingFile = false);
     void putDataFile(
+        const QString &remoteFilePath,
+        const QByteArray &data,
+        const QString &operationId);
+    void removeDataFileBeforeOverwrite(
         const QString &remoteFilePath,
         const QByteArray &data,
         const QString &operationId);
@@ -155,20 +172,24 @@ private:
         const QString &remoteFilePath,
         const QString &operationId,
         const QUrl &url,
-        const QVariantMap &headers = {});
+        const QVariantMap &headers = {},
+        bool forceRefresh = false);
     void downloadDataFromWebDav(
         const QString &remoteFilePath,
         const QString &operationId,
-        const QString &firstErrorMessage);
+        const QString &firstErrorMessage,
+        bool forceRefresh = false);
     void mergeSnapshotManifestWithDirectoryListing(
         const QString &remoteFilePath,
         const QString &operationId,
         const QByteArray &manifestData,
-        const QString &readMessage);
+        const QString &readMessage,
+        bool forceRefresh = false);
     void downloadSnapshotManifestFromDirectoryListing(
         const QString &remoteFilePath,
         const QString &operationId,
-        const QString &firstErrorMessage);
+        const QString &firstErrorMessage,
+        bool forceRefresh = false);
     QUrl proxiedDownloadUrl(
         const QString &remoteFilePath,
         const QString &sign = {},

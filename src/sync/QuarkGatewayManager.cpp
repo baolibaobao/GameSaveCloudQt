@@ -78,6 +78,7 @@ void QuarkGatewayManager::startAndConfigure(const QString &cookie, bool forceSto
     }
 
     migrateLegacyDataDirectory();
+    cleanupOpenListLogs();
 
     emit statusChanged(QStringLiteral("正在设置 OpenList 管理员密码"));
     if (!setAdminPassword(m_adminPassword)) {
@@ -181,6 +182,31 @@ void QuarkGatewayManager::uploadDataFile(
     ensureDirectoryBeforeDataUpload(cleanRemotePath, data, operationId);
 }
 
+void QuarkGatewayManager::uploadDataFileOverwrite(
+    const QString &remoteFilePath,
+    const QByteArray &data,
+    const QString &operationId)
+{
+    const QString cleanRemotePath = normalizedRemotePath(remoteFilePath);
+    if (cleanRemotePath.isEmpty()) {
+        emit dataFileUploadFinished(false,
+                                    remoteFilePath,
+                                    operationId,
+                                    QStringLiteral("云端 JSON 路径为空，无法覆盖写入云端配置"));
+        return;
+    }
+
+    if (m_apiToken.trimmed().isEmpty()) {
+        emit dataFileUploadFinished(false,
+                                    cleanRemotePath,
+                                    operationId,
+                                    QStringLiteral("夸克本机网关尚未连接成功，无法覆盖写入云端配置"));
+        return;
+    }
+
+    ensureDirectoryBeforeDataUpload(cleanRemotePath, data, operationId, true);
+}
+
 void QuarkGatewayManager::downloadFile(const QString &remoteFilePath, const QString &localFilePath)
 {
     const QString cleanRemotePath = normalizedRemotePath(remoteFilePath);
@@ -211,7 +237,7 @@ void QuarkGatewayManager::performDownloadFile(const QString &remoteFilePath, con
     QJsonObject body;
     body.insert(QStringLiteral("path"), cleanRemotePath);
     body.insert(QStringLiteral("password"), QString());
-    body.insert(QStringLiteral("refresh"), true);
+    body.insert(QStringLiteral("refresh"), false);
 
     QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply, cleanRemotePath, localFilePath]() {
@@ -236,7 +262,7 @@ void QuarkGatewayManager::performDownloadFile(const QString &remoteFilePath, con
     });
 }
 
-void QuarkGatewayManager::downloadDataFile(const QString &remoteFilePath, const QString &operationId)
+void QuarkGatewayManager::downloadDataFile(const QString &remoteFilePath, const QString &operationId, bool forceRefresh)
 {
     const QString cleanRemotePath = normalizedRemotePath(remoteFilePath);
     if (cleanRemotePath.isEmpty()) {
@@ -261,10 +287,10 @@ void QuarkGatewayManager::downloadDataFile(const QString &remoteFilePath, const 
     QJsonObject body;
     body.insert(QStringLiteral("path"), cleanRemotePath);
     body.insert(QStringLiteral("password"), QString());
-    body.insert(QStringLiteral("refresh"), true);
+    body.insert(QStringLiteral("refresh"), forceRefresh);
 
     QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, cleanRemotePath, operationId]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cleanRemotePath, operationId, forceRefresh]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
         const QByteArray payload = reply->readAll();
@@ -287,7 +313,7 @@ void QuarkGatewayManager::downloadDataFile(const QString &remoteFilePath, const 
         }
 
         const QString sign = data.value(QStringLiteral("sign")).toString();
-        QUrl downloadUrl = proxiedDownloadUrl(cleanRemotePath, sign);
+        QUrl downloadUrl = proxiedDownloadUrl(cleanRemotePath, sign, true);
         if (sign.trimmed().isEmpty()) {
             QString rawUrl = data.value(QStringLiteral("raw_url")).toString();
             if (rawUrl.trimmed().isEmpty()) {
@@ -306,7 +332,7 @@ void QuarkGatewayManager::downloadDataFile(const QString &remoteFilePath, const 
             }
         }
 
-        downloadDataFromUrl(cleanRemotePath, operationId, downloadUrl, headers);
+        downloadDataFromUrl(cleanRemotePath, operationId, downloadUrl, headers, forceRefresh);
     });
 }
 
@@ -467,6 +493,51 @@ QString QuarkGatewayManager::appDataRootPath() const
     }
 
     return QDir::toNativeSeparators(appDataPath);
+}
+
+void QuarkGatewayManager::cleanupOpenListLogs(int daysToKeep) const
+{
+    const QDir dataDir(dataDirectoryPath());
+    if (!dataDir.exists()) {
+        return;
+    }
+
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-std::max(1, daysToKeep));
+    const QStringList logRoots = {
+        dataDir.absolutePath(),
+        dataDir.absoluteFilePath(QStringLiteral("log")),
+        dataDir.absoluteFilePath(QStringLiteral("logs"))
+    };
+
+    QSet<QString> visitedRoots;
+    for (const QString &rootPath : logRoots) {
+        const QString cleanRootPath = QDir::cleanPath(rootPath);
+        if (visitedRoots.contains(cleanRootPath)) {
+            continue;
+        }
+        visitedRoots.insert(cleanRootPath);
+
+        QDir rootDir(cleanRootPath);
+        if (!rootDir.exists()) {
+            continue;
+        }
+
+        QDirIterator iterator(
+            rootDir.absolutePath(),
+            {QStringLiteral("*.log"), QStringLiteral("*.log.*")},
+            QDir::Files | QDir::Readable | QDir::Writable,
+            QDirIterator::Subdirectories);
+
+        while (iterator.hasNext()) {
+            iterator.next();
+            const QFileInfo fileInfo(iterator.filePath());
+            if (!fileInfo.lastModified().isValid() || fileInfo.lastModified() >= cutoff) {
+                continue;
+            }
+
+            QFile::remove(fileInfo.absoluteFilePath());
+        }
+    }
 }
 
 bool QuarkGatewayManager::migrateLegacyDataDirectory()
@@ -670,10 +741,16 @@ void QuarkGatewayManager::configureStorage(const QString &token)
         const QString status = existingStorage.value(QStringLiteral("status")).toString().trimmed();
         const bool storageLooksHealthy = status.isEmpty()
                                          || status.compare(QStringLiteral("work"), Qt::CaseInsensitive) == 0;
-        if (existingStorageId > 0 && !m_forceStorageUpdate && storageLooksHealthy) {
+        const int cacheExpiration = existingStorage.value(QStringLiteral("cache_expiration")).toInt(-1);
+        const bool storageNeedsCachePolicyUpdate = cacheExpiration == 0;
+        if (existingStorageId > 0 && !m_forceStorageUpdate && storageLooksHealthy && !storageNeedsCachePolicyUpdate) {
             emit statusChanged(QStringLiteral("已复用本地 OpenList 夸克挂载"));
             ensureSyncDirectory(token);
             return;
+        }
+
+        if (existingStorageId > 0 && storageNeedsCachePolicyUpdate) {
+            emit statusChanged(QStringLiteral("正在更新 OpenList 夸克挂载缓存策略"));
         }
 
         createOrUpdateStorage(token, existingStorageId);
@@ -992,6 +1069,10 @@ void QuarkGatewayManager::putFile(
 
     QNetworkReply *reply = m_network.put(request, file);
     file->setParent(reply);
+    connect(reply, &QNetworkReply::uploadProgress, this,
+            [this, localFilePath, remoteFilePath](qint64 bytesSent, qint64 bytesTotal) {
+                emit fileUploadProgress(localFilePath, remoteFilePath, bytesSent, bytesTotal);
+            });
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, file, localFilePath, remoteFilePath, uploadState, successMessage]() {
         const QNetworkReply::NetworkError error = reply->error();
@@ -1021,7 +1102,8 @@ void QuarkGatewayManager::putFile(
 void QuarkGatewayManager::ensureDirectoryBeforeDataUpload(
     const QString &remoteFilePath,
     const QByteArray &data,
-    const QString &operationId)
+    const QString &operationId,
+    bool overwriteExistingFile)
 {
     const int slashIndex = remoteFilePath.lastIndexOf(QLatin1Char('/'));
     const QString remoteDirectory = slashIndex > 0
@@ -1033,7 +1115,7 @@ void QuarkGatewayManager::ensureDirectoryBeforeDataUpload(
     body.insert(QStringLiteral("path"), normalizedRemotePath(remoteDirectory));
 
     QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, data, operationId]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, data, operationId, overwriteExistingFile]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
         const QByteArray payload = reply->readAll();
@@ -1047,7 +1129,11 @@ void QuarkGatewayManager::ensureDirectoryBeforeDataUpload(
                 || message.contains(QStringLiteral("exist"), Qt::CaseInsensitive)
                 || message.contains(QStringLiteral("exists"), Qt::CaseInsensitive)
                 || message.contains(QStringLiteral("已存在")))) {
-            putDataFile(remoteFilePath, data, operationId);
+            if (overwriteExistingFile) {
+                removeDataFileBeforeOverwrite(remoteFilePath, data, operationId);
+            } else {
+                putDataFile(remoteFilePath, data, operationId);
+            }
             return;
         }
 
@@ -1102,6 +1188,57 @@ void QuarkGatewayManager::putDataFile(
                                     remoteFilePath,
                                     operationId,
                                     apiMessageFromPayload(payload, errorString));
+    });
+}
+
+void QuarkGatewayManager::removeDataFileBeforeOverwrite(
+    const QString &remoteFilePath,
+    const QByteArray &data,
+    const QString &operationId)
+{
+    const QString cleanRemotePath = normalizedRemotePath(remoteFilePath);
+    const int slashIndex = cleanRemotePath.lastIndexOf(QLatin1Char('/'));
+    const QString remoteDirectory = slashIndex > 0
+                                        ? cleanRemotePath.left(slashIndex)
+                                        : QStringLiteral("/Quark/GameSaveCloudQt");
+    const QString fileName = QFileInfo(cleanRemotePath).fileName();
+
+    if (fileName.trimmed().isEmpty()) {
+        emit dataFileUploadFinished(false,
+                                    cleanRemotePath,
+                                    operationId,
+                                    QStringLiteral("云端配置文件名为空，无法覆盖写入"));
+        return;
+    }
+
+    QNetworkRequest request = apiRequest(QStringLiteral("/api/fs/remove"), m_apiToken);
+    QJsonObject body;
+    body.insert(QStringLiteral("dir"), normalizedRemotePath(remoteDirectory));
+    body.insert(QStringLiteral("names"), QJsonArray{fileName});
+
+    QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cleanRemotePath, data, operationId]() {
+        const QNetworkReply::NetworkError error = reply->error();
+        const QString errorString = reply->errorString();
+        const QByteArray payload = reply->readAll();
+        reply->deleteLater();
+
+        const QJsonObject root = QJsonDocument::fromJson(payload).object();
+        const int code = root.value(QStringLiteral("code")).toInt();
+        const QString message = root.value(QStringLiteral("message")).toString();
+        const bool missingIsOk = message.contains(QStringLiteral("not exist"), Qt::CaseInsensitive)
+                                 || message.contains(QStringLiteral("not found"), Qt::CaseInsensitive)
+                                 || message.contains(QStringLiteral("不存在"));
+        if (error == QNetworkReply::NoError && (code == 200 || missingIsOk)) {
+            putDataFile(cleanRemotePath, data, operationId);
+            return;
+        }
+
+        emit dataFileUploadFinished(false,
+                                    cleanRemotePath,
+                                    operationId,
+                                    QStringLiteral("云端旧配置删除失败：%1")
+                                        .arg(apiMessageFromPayload(payload, errorString)));
     });
 }
 
@@ -1178,6 +1315,10 @@ void QuarkGatewayManager::downloadFromUrlCandidates(
     applySafeDownloadHeaders(request, headers);
 
     QNetworkReply *reply = m_network.get(request);
+    connect(reply, &QNetworkReply::downloadProgress, this,
+            [this, remoteFilePath, localFilePath](qint64 bytesReceived, qint64 bytesTotal) {
+                emit fileDownloadProgress(remoteFilePath, localFilePath, bytesReceived, bytesTotal);
+            });
     connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, localFilePath, candidates, candidateIndex, previousError]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
@@ -1256,11 +1397,14 @@ QList<QPair<QUrl, QVariantMap>> QuarkGatewayManager::buildDownloadCandidates(
     QList<QPair<QUrl, QVariantMap>> candidates;
     const QString sign = fileData.value(QStringLiteral("sign")).toString();
     /*
-     * 优先使用 OpenList /d 下载地址，保持与最初稳定测试一致；
-     * /p?d 强制本机代理、raw_url/url 和 WebDAV 作为兜底。
+     * 优先使用 OpenList 本机代理和 WebDAV，减少直接触碰夸克临时直链。
+     * raw_url/url 只作为最后兜底，避免请求头或行为模式更像脚本下载器。
      */
-    candidates.append(QPair<QUrl, QVariantMap>(proxiedDownloadUrl(remoteFilePath, sign), QVariantMap{}));
     candidates.append(QPair<QUrl, QVariantMap>(proxiedDownloadUrl(remoteFilePath, sign, true), QVariantMap{}));
+    candidates.append(QPair<QUrl, QVariantMap>(
+        QUrl(gatewayBaseUrl() + QStringLiteral("/dav") + normalizedRemotePath(remoteFilePath)),
+        QVariantMap{}));
+    candidates.append(QPair<QUrl, QVariantMap>(proxiedDownloadUrl(remoteFilePath, sign), QVariantMap{}));
 
     QString rawUrl = fileData.value(QStringLiteral("raw_url")).toString();
     if (rawUrl.trimmed().isEmpty()) {
@@ -1274,10 +1418,6 @@ QList<QPair<QUrl, QVariantMap>> QuarkGatewayManager::buildDownloadCandidates(
     if (rawDownloadUrl.isValid() && !rawDownloadUrl.isEmpty()) {
         candidates.append(QPair<QUrl, QVariantMap>(rawDownloadUrl, headers));
     }
-
-    candidates.append(QPair<QUrl, QVariantMap>(
-        QUrl(gatewayBaseUrl() + QStringLiteral("/dav") + normalizedRemotePath(remoteFilePath)),
-        QVariantMap{}));
 
     return candidates;
 }
@@ -1310,7 +1450,8 @@ void QuarkGatewayManager::downloadDataFromUrl(
     const QString &remoteFilePath,
     const QString &operationId,
     const QUrl &url,
-    const QVariantMap &headers)
+    const QVariantMap &headers,
+    bool forceRefresh)
 {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("GameSaveCloudQt/0.1"));
@@ -1328,7 +1469,7 @@ void QuarkGatewayManager::downloadDataFromUrl(
     }
 
     QNetworkReply *reply = m_network.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, operationId]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, operationId, forceRefresh]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
         const QByteArray payload = reply->readAll();
@@ -1338,7 +1479,8 @@ void QuarkGatewayManager::downloadDataFromUrl(
             downloadDataFromWebDav(
                 remoteFilePath,
                 operationId,
-                QStringLiteral("云端索引下载失败：%1").arg(errorString));
+                QStringLiteral("云端索引下载失败：%1").arg(errorString),
+                forceRefresh);
             return;
         }
 
@@ -1347,7 +1489,8 @@ void QuarkGatewayManager::downloadDataFromUrl(
                 remoteFilePath,
                 operationId,
                 payload,
-                QStringLiteral("云端索引已读取"));
+                QStringLiteral("云端索引已读取"),
+                forceRefresh);
             return;
         }
 
@@ -1362,7 +1505,8 @@ void QuarkGatewayManager::downloadDataFromUrl(
 void QuarkGatewayManager::downloadDataFromWebDav(
     const QString &remoteFilePath,
     const QString &operationId,
-    const QString &firstErrorMessage)
+    const QString &firstErrorMessage,
+    bool forceRefresh)
 {
     QUrl url(gatewayBaseUrl() + QStringLiteral("/dav") + normalizedRemotePath(remoteFilePath));
     QNetworkRequest request(url);
@@ -1379,7 +1523,7 @@ void QuarkGatewayManager::downloadDataFromWebDav(
      * 只有 WebDAV 兜底也失败时，才把两个错误一起返回，方便日志定位。
      */
     QNetworkReply *reply = m_network.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, operationId, firstErrorMessage]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, remoteFilePath, operationId, firstErrorMessage, forceRefresh]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QString errorString = reply->errorString();
         const QByteArray payload = reply->readAll();
@@ -1391,7 +1535,8 @@ void QuarkGatewayManager::downloadDataFromWebDav(
                     remoteFilePath,
                     operationId,
                     QStringLiteral("%1；WebDAV 兜底读取也失败：%2")
-                        .arg(firstErrorMessage, errorString));
+                        .arg(firstErrorMessage, errorString),
+                    forceRefresh);
                 return;
             }
 
@@ -1409,7 +1554,8 @@ void QuarkGatewayManager::downloadDataFromWebDav(
                 remoteFilePath,
                 operationId,
                 payload,
-                QStringLiteral("云端索引已通过 WebDAV 兜底读取"));
+                QStringLiteral("云端索引已通过 WebDAV 兜底读取"),
+                forceRefresh);
             return;
         }
 
@@ -1425,7 +1571,8 @@ void QuarkGatewayManager::mergeSnapshotManifestWithDirectoryListing(
     const QString &remoteFilePath,
     const QString &operationId,
     const QByteArray &manifestData,
-    const QString &readMessage)
+    const QString &readMessage,
+    bool forceRefresh)
 {
     const QString cleanManifestPath = normalizedRemotePath(remoteFilePath);
     const int slashIndex = cleanManifestPath.lastIndexOf(QLatin1Char('/'));
@@ -1439,7 +1586,7 @@ void QuarkGatewayManager::mergeSnapshotManifestWithDirectoryListing(
     body.insert(QStringLiteral("password"), QString());
     body.insert(QStringLiteral("page"), 1);
     body.insert(QStringLiteral("per_page"), 500);
-    body.insert(QStringLiteral("refresh"), true);
+    body.insert(QStringLiteral("refresh"), forceRefresh);
 
     QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply, cleanManifestPath, remoteDirectory, operationId, manifestData, readMessage]() {
@@ -1575,7 +1722,8 @@ void QuarkGatewayManager::mergeSnapshotManifestWithDirectoryListing(
 void QuarkGatewayManager::downloadSnapshotManifestFromDirectoryListing(
     const QString &remoteFilePath,
     const QString &operationId,
-    const QString &firstErrorMessage)
+    const QString &firstErrorMessage,
+    bool forceRefresh)
 {
     const QString cleanManifestPath = normalizedRemotePath(remoteFilePath);
     const int slashIndex = cleanManifestPath.lastIndexOf(QLatin1Char('/'));
@@ -1589,7 +1737,7 @@ void QuarkGatewayManager::downloadSnapshotManifestFromDirectoryListing(
     body.insert(QStringLiteral("password"), QString());
     body.insert(QStringLiteral("page"), 1);
     body.insert(QStringLiteral("per_page"), 500);
-    body.insert(QStringLiteral("refresh"), true);
+    body.insert(QStringLiteral("refresh"), forceRefresh);
 
     /*
      * 如果夸克/OpenList 拒绝读取 snapshot-manifest.json 的文件内容，
@@ -1740,11 +1888,10 @@ QByteArray QuarkGatewayManager::storagePayload(int existingStorageId) const
     body.insert(QStringLiteral("order"), 0);
     body.insert(QStringLiteral("remark"), QStringLiteral("GameSaveCloud Quark"));
     /*
-     * 这里偏向同步正确性而不是目录浏览性能。
-     * 存档快照可能被用户在夸克网页端手动删除，缓存时间过长会导致
-     * OpenList 仍返回旧文件，进而让上传逻辑误判“云端已存在”。
+     * 普通读取允许使用 OpenList 短缓存，减少对夸克接口的强制刷新。
+     * 上传前存在性检查、用户手动刷新等需要强一致的路径会单独传 refresh=true。
      */
-    body.insert(QStringLiteral("cache_expiration"), 0);
+    body.insert(QStringLiteral("cache_expiration"), 300);
     body.insert(QStringLiteral("web_proxy"), true);
     body.insert(QStringLiteral("webdav_policy"), QStringLiteral("native_proxy"));
     body.insert(QStringLiteral("down_proxy_url"), QString());
