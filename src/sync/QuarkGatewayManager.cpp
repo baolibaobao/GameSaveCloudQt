@@ -310,6 +310,99 @@ void QuarkGatewayManager::downloadDataFile(const QString &remoteFilePath, const 
     });
 }
 
+void QuarkGatewayManager::checkStorageHealth(const QString &operationId)
+{
+    if (m_apiToken.trimmed().isEmpty()) {
+        emit storageHealthCheckFinished(false,
+                                        operationId,
+                                        QStringLiteral("OpenList 本机网关尚未完成登录，无法检查夸克挂载状态"));
+        return;
+    }
+
+    QNetworkRequest request = apiRequest(QStringLiteral("/api/admin/storage/list?page=1&per_page=200"), m_apiToken);
+    QNetworkReply *reply = m_network.get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, operationId]() {
+        const QNetworkReply::NetworkError error = reply->error();
+        const QString errorString = reply->errorString();
+        const QByteArray payload = reply->readAll();
+        reply->deleteLater();
+
+        const QJsonObject root = QJsonDocument::fromJson(payload).object();
+        if (error != QNetworkReply::NoError || root.value(QStringLiteral("code")).toInt() != 200) {
+            emit storageHealthCheckFinished(false,
+                                            operationId,
+                                            apiMessageFromPayload(payload, errorString));
+            return;
+        }
+
+        const QJsonObject storage = quarkStorageFromListPayload(payload);
+        const int storageId = storage.value(QStringLiteral("id")).toInt();
+        if (storageId <= 0) {
+            emit storageHealthCheckFinished(false,
+                                            operationId,
+                                            QStringLiteral("OpenList 未找到 /Quark 夸克挂载，请重新连接 Cookie"));
+            return;
+        }
+
+        const QString status = storage.value(QStringLiteral("status")).toString().trimmed();
+        const bool healthy = status.isEmpty()
+                             || status.compare(QStringLiteral("work"), Qt::CaseInsensitive) == 0;
+        if (!healthy) {
+            emit storageHealthCheckFinished(false,
+                                            operationId,
+                                            QStringLiteral("OpenList /Quark 挂载状态异常：%1")
+                                                .arg(status.isEmpty() ? QStringLiteral("unknown") : status));
+            return;
+        }
+
+        emit storageHealthCheckFinished(true,
+                                        operationId,
+                                        QStringLiteral("OpenList /Quark 挂载状态正常"));
+    });
+}
+
+void QuarkGatewayManager::checkWebDavDirectory(const QString &remoteDirectoryPath, const QString &operationId)
+{
+    const QString cleanRemotePath = normalizedRemotePath(remoteDirectoryPath);
+    QUrl url(gatewayBaseUrl() + QStringLiteral("/dav") + cleanRemotePath);
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("GameSaveCloudQt/0.1"));
+    request.setRawHeader("Depth", "0");
+    request.setTransferTimeout(12000);
+
+    if (!m_adminPassword.isEmpty()) {
+        const QByteArray credential = QStringLiteral("admin:%1").arg(m_adminPassword).toUtf8().toBase64();
+        request.setRawHeader("Authorization", QByteArrayLiteral("Basic ") + credential);
+    }
+
+    const QByteArray body = QByteArrayLiteral(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+        "<propfind xmlns=\"DAV:\"><prop><resourcetype/></prop></propfind>");
+    QNetworkReply *reply = m_network.sendCustomRequest(request, QByteArrayLiteral("PROPFIND"), body);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cleanRemotePath, operationId]() {
+        const QNetworkReply::NetworkError error = reply->error();
+        const QString errorString = reply->errorString();
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+
+        if (error == QNetworkReply::NoError && (httpStatus == 200 || httpStatus == 207)) {
+            emit remoteDirectoryCheckFinished(true,
+                                             cleanRemotePath,
+                                             operationId,
+                                             QStringLiteral("OpenList WebDAV 目录可访问"));
+            return;
+        }
+
+        const QString statusText = httpStatus > 0
+                                       ? QStringLiteral("HTTP %1，%2").arg(httpStatus).arg(errorString)
+                                       : errorString;
+        emit remoteDirectoryCheckFinished(false,
+                                         cleanRemotePath,
+                                         operationId,
+                                         QStringLiteral("OpenList WebDAV 目录不可访问：%1").arg(statusText));
+    });
+}
+
 QString QuarkGatewayManager::adminPassword() const
 {
     return m_adminPassword;

@@ -31,6 +31,8 @@ public:
     void uploadDataFile(const QString &remoteFilePath, const QByteArray &data, const QString &operationId);
     void downloadDataFile(const QString &remoteFilePath, const QString &operationId);
     void downloadFile(const QString &remoteFilePath, const QString &localFilePath);
+    void checkStorageHealth(const QString &operationId);
+    void checkWebDavDirectory(const QString &remoteDirectoryPath, const QString &operationId);
     QString adminPassword() const;
     QString gatewayBaseUrl() const;
     QString executablePath() const;
@@ -61,6 +63,15 @@ signals:
         const QString &remoteFilePath,
         const QString &operationId,
         const QByteArray &data,
+        const QString &message);
+    void storageHealthCheckFinished(
+        bool success,
+        const QString &operationId,
+        const QString &message);
+    void remoteDirectoryCheckFinished(
+        bool success,
+        const QString &remoteDirectoryPath,
+        const QString &operationId,
         const QString &message);
 
 private:

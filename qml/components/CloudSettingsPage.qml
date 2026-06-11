@@ -231,12 +231,30 @@ ColumnLayout {
             anchors.margins: 22
             spacing: 12
 
-            Text {
-                text: "连接状态"
-                color: control.textColor
-                font.pixelSize: 18
-                font.bold: true
+            RowLayout {
                 Layout.fillWidth: true
+                spacing: 10
+
+                Text {
+                    text: "连接状态"
+                    color: control.textColor
+                    font.pixelSize: 18
+                    font.bold: true
+                    Layout.fillWidth: true
+                }
+
+                ActionButton {
+                    Layout.preferredWidth: 116
+                    Layout.preferredHeight: 34
+                    kind: "ghost"
+                    icon: "\uE72C"
+                    label: "重新检测"
+                    enabled: control.backend && control.savedCookie() && !control.backend.webDavTesting
+                    darkMode: control.darkMode
+                    accentColor: control.accentColor
+                    labelPixelSize: 12
+                    onClicked: control.backend.recheckQuarkGatewayHealth()
+                }
             }
 
             StatusRow {

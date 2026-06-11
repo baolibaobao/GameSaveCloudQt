@@ -116,6 +116,7 @@ public:
         const QString &password,
         const QString &remoteRootPath);
     Q_INVOKABLE bool saveQuarkCookieGateway(const QString &cookie);
+    Q_INVOKABLE bool recheckQuarkGatewayHealth();
     Q_INVOKABLE bool setAutoSyncEnabled(bool enabled);
     Q_INVOKABLE bool autoSyncEnabledForGame(const QString &appId) const;
     Q_INVOKABLE bool setAutoSyncEnabledForGame(const QString &appId, bool enabled);
@@ -245,6 +246,7 @@ private:
     void loadQuarkGatewaySettings();
     void setQuarkGatewayStatus(const QString &status);
     void startQuarkCookieHealthCheck();
+    void startQuarkCookieProbeUpload();
     QString quarkCookieHealthCheckPath() const;
     bool isQuarkAuthFailureMessage(const QString &message) const;
     void loadAutoSyncSettings();

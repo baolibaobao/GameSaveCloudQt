@@ -267,6 +267,59 @@ SteamManager::SteamManager(QObject *parent)
                 handleCloudDataDownloadFinished(success, remoteFilePath, operationId, data, message);
             });
 
+    connect(&m_quarkGatewayManager, &QuarkGatewayManager::storageHealthCheckFinished, this,
+            [this](bool success, const QString &operationId, const QString &message) {
+                if (operationId != QStringLiteral("quark-cookie-health-storage")) {
+                    return;
+                }
+
+                if (!success) {
+                    const QString status = isQuarkAuthFailureMessage(message)
+                                               ? QStringLiteral("夸克 Cookie 健康检查失败：OpenList 挂载鉴权异常，请更新 Cookie 后重新连接")
+                                               : QStringLiteral("夸克网关健康检查失败：OpenList 夸克挂载不可用，请重新连接后再试");
+                    setWebDavTesting(false);
+                    setWebDavConnectionStatus(QStringLiteral("夸克网盘连接检测失败：OpenList 挂载不可用"));
+                    setQuarkGatewayStatus(status);
+                    m_logger.warning(QStringLiteral("夸克 Cookie 健康检查挂载检查失败：%1").arg(message));
+                    return;
+                }
+
+                setQuarkGatewayStatus(QStringLiteral("夸克健康检查：OpenList 挂载正常，正在检查 WebDAV 目录"));
+                m_logger.info(QStringLiteral("夸克 Cookie 健康检查挂载检查通过：%1").arg(message));
+                m_quarkGatewayManager.checkWebDavDirectory(
+                    m_webDavConfig.remoteRootPath.trimmed().isEmpty()
+                        ? QStringLiteral("/Quark/GameSaveCloudQt")
+                        : m_webDavConfig.remoteRootPath,
+                    QStringLiteral("quark-cookie-health-webdav"));
+            });
+
+    connect(&m_quarkGatewayManager, &QuarkGatewayManager::remoteDirectoryCheckFinished, this,
+            [this](bool success,
+                   const QString &remoteDirectoryPath,
+                   const QString &operationId,
+                   const QString &message) {
+                if (operationId != QStringLiteral("quark-cookie-health-webdav")) {
+                    return;
+                }
+
+                if (!success) {
+                    const QString status = isQuarkAuthFailureMessage(message)
+                                               ? QStringLiteral("夸克 Cookie 健康检查失败：WebDAV 目录鉴权异常，请更新 Cookie 后重新连接")
+                                               : QStringLiteral("夸克网关健康检查失败：本机 WebDAV 目录不可访问，请查看 OpenList 状态");
+                    setWebDavTesting(false);
+                    setWebDavConnectionStatus(QStringLiteral("夸克网盘连接检测失败：本机 WebDAV 目录不可访问"));
+                    setQuarkGatewayStatus(status);
+                    m_logger.warning(QStringLiteral("夸克 Cookie 健康检查 WebDAV 目录检查失败：路径：%1，原因：%2")
+                                         .arg(remoteDirectoryPath, message));
+                    return;
+                }
+
+                setQuarkGatewayStatus(QStringLiteral("夸克健康检查：WebDAV 目录可访问，正在写入并读取探针文件"));
+                m_logger.info(QStringLiteral("夸克 Cookie 健康检查 WebDAV 目录检查通过：路径：%1，结果：%2")
+                                  .arg(remoteDirectoryPath, message));
+                startQuarkCookieProbeUpload();
+            });
+
     connect(&m_quarkGatewayManager, &QuarkGatewayManager::gatewayReady, this,
             [this](const WebDavConfig &config, const QString &message) {
                 if (m_webDavSettings.saveConfig(config)) {
@@ -1521,6 +1574,22 @@ bool SteamManager::saveQuarkCookieGateway(const QString &cookie)
     return true;
 }
 
+bool SteamManager::recheckQuarkGatewayHealth()
+{
+    if (m_quarkCookie.trimmed().isEmpty()) {
+        setQuarkGatewayStatus(QStringLiteral("无法重新检测夸克连接：请先粘贴并保存 Cookie"));
+        m_logger.warning(QStringLiteral("夸克连接重新检测失败：未保存 Cookie"));
+        return false;
+    }
+
+    setWebDavTesting(true);
+    setWebDavConnectionStatus(QStringLiteral("正在重新检测夸克网盘连接"));
+    setQuarkGatewayStatus(QStringLiteral("正在重新检测 OpenList 本机网关和夸克挂载状态"));
+    m_logger.info(QStringLiteral("开始重新检测夸克网盘连接：将复用本地 OpenList 固定数据目录"));
+    m_quarkGatewayManager.startAndConfigure(m_quarkCookie, false);
+    return true;
+}
+
 bool SteamManager::setAutoSyncEnabled(bool enabled)
 {
     const std::unique_ptr<QSettings> settings = AppSettings::create();
@@ -2288,9 +2357,12 @@ void SteamManager::handleCloudDataUploadFinished(
                 remoteFilePath,
                 QStringLiteral("quark-cookie-health-download"));
         } else {
+            setWebDavTesting(false);
             if (isQuarkAuthFailureMessage(message)) {
+                setWebDavConnectionStatus(QStringLiteral("夸克网盘连接检测失败：探针写入鉴权异常"));
                 setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 健康检查失败：Cookie 可能已过期或鉴权异常，请更新 Cookie 后重新连接"));
             } else {
+                setWebDavConnectionStatus(QStringLiteral("夸克网盘已连接，但健康检查探针写入未完成"));
                 setQuarkGatewayStatus(QStringLiteral("夸克网关已连接，健康检查探针写入未完成；若云端快照可读写，可继续使用"));
             }
             m_logger.warning(QStringLiteral("夸克 Cookie 健康检查写入失败：路径：%1，原因：%2").arg(remoteFilePath, message));
@@ -2337,13 +2409,16 @@ void SteamManager::handleCloudDataDownloadFinished(
     const QString &message)
 {
     if (operationId == QStringLiteral("quark-cookie-health-download")) {
+        setWebDavTesting(false);
         if (success) {
             const QJsonObject payload = QJsonDocument::fromJson(data).object();
             const bool ok = payload.value(QStringLiteral("type")).toString() == QStringLiteral("quark-cookie-health-check");
             if (ok) {
+                setWebDavConnectionStatus(QStringLiteral("夸克网盘连接健康，上传和下载快照可用"));
                 setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 健康检查通过：OpenList 本机网关可写入并读取文件，上传和下载快照可用"));
                 m_logger.info(QStringLiteral("夸克 Cookie 健康检查通过：探针文件读取成功，路径：%1").arg(remoteFilePath));
             } else {
+                setWebDavConnectionStatus(QStringLiteral("夸克网盘已连接，但健康检查探针内容异常"));
                 setQuarkGatewayStatus(QStringLiteral("夸克 Cookie 健康检查异常：已读取探针文件，但内容不完整，请重新连接后再试"));
                 m_logger.warning(QStringLiteral("夸克 Cookie 健康检查异常：探针文件内容不符合预期，路径：%1").arg(remoteFilePath));
             }
@@ -2351,6 +2426,9 @@ void SteamManager::handleCloudDataDownloadFinished(
             const QString status = isQuarkAuthFailureMessage(message)
                                        ? QStringLiteral("夸克 Cookie 健康检查失败：Cookie 可能已过期或下载鉴权异常。若目录能打开但 zip 下载失败，请更新 Cookie 后重新连接")
                                        : QStringLiteral("夸克 Cookie 健康检查失败：探针文件读取失败，请查看日志确认 OpenList/夸克网关状态");
+            setWebDavConnectionStatus(isQuarkAuthFailureMessage(message)
+                                           ? QStringLiteral("夸克网盘连接检测失败：探针读取鉴权异常")
+                                           : QStringLiteral("夸克网盘连接检测失败：探针读取失败"));
             setQuarkGatewayStatus(status);
             m_logger.warning(QStringLiteral("夸克 Cookie 健康检查读取失败：路径：%1，原因：%2").arg(remoteFilePath, message));
         }
@@ -3789,6 +3867,19 @@ void SteamManager::startQuarkCookieHealthCheck()
         return;
     }
 
+    setWebDavTesting(true);
+    setWebDavConnectionStatus(QStringLiteral("正在检测夸克网盘连接健康状态"));
+    setQuarkGatewayStatus(QStringLiteral("夸克健康检查：正在检查 OpenList 夸克挂载状态"));
+    m_logger.info(QStringLiteral("开始夸克 Cookie 健康检查：先检查 OpenList 挂载和本机 WebDAV 目录"));
+    m_quarkGatewayManager.checkStorageHealth(QStringLiteral("quark-cookie-health-storage"));
+}
+
+void SteamManager::startQuarkCookieProbeUpload()
+{
+    if (!m_webDavConfig.isValid()) {
+        return;
+    }
+
     /*
      * 夸克 Cookie 有一种比较迷惑的“半失效”状态：
      * OpenList 仍然可以列目录，但真正下载文件时会返回 403 Forbidden
@@ -3801,7 +3892,7 @@ void SteamManager::startQuarkCookieHealthCheck()
     payload.insert(QStringLiteral("app"), QStringLiteral("GameSaveCloudQt"));
 
     const QString healthCheckPath = quarkCookieHealthCheckPath();
-    m_logger.info(QStringLiteral("开始夸克 Cookie 健康检查：将写入并读取探针文件 %1")
+    m_logger.info(QStringLiteral("夸克 Cookie 健康检查：将写入并读取探针文件 %1")
                       .arg(healthCheckPath));
     m_quarkGatewayManager.uploadDataFile(
         healthCheckPath,
