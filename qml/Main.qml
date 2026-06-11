@@ -78,9 +78,11 @@ ApplicationWindow {
             return false;
         }
         return status.indexOf("Cookie") >= 0
-                && (status.indexOf("健康检查失败") >= 0
-                    || status.indexOf("可能已过期") >= 0
-                    || status.indexOf("鉴权异常") >= 0);
+                && (status.indexOf("可能已过期") >= 0
+                    || status.indexOf("鉴权异常") >= 0
+                    || status.indexOf("Forbidden") >= 0
+                    || status.indexOf("Unauthorized") >= 0
+                    || status.indexOf("403") >= 0);
     }
     function autoSyncActiveForGame(appId) {
         root.autoSyncRevision;
@@ -403,7 +405,7 @@ ApplicationWindow {
                 root.lastCookieAlertStatus = steamManager.quarkGatewayStatus;
                 root.showUserAlert(
                     "夸克 Cookie 需要更新",
-                    "夸克 Cookie 健康检查没有通过，请更新 Cookie 后重新连接。",
+                    "检测到夸克 Cookie 鉴权异常，请更新 Cookie 后重新连接。",
                     steamManager.quarkGatewayStatus + "\n\n可以进入“云同步设置”，粘贴新的夸克 Cookie，然后点击连接。",
                     false);
             }

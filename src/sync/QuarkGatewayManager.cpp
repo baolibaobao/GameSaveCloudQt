@@ -345,9 +345,7 @@ void QuarkGatewayManager::checkStorageHealth(const QString &operationId)
         }
 
         const QString status = storage.value(QStringLiteral("status")).toString().trimmed();
-        const bool healthy = status.isEmpty()
-                             || status.compare(QStringLiteral("work"), Qt::CaseInsensitive) == 0;
-        if (!healthy) {
+        if (!status.isEmpty() && status.compare(QStringLiteral("work"), Qt::CaseInsensitive) != 0) {
             emit storageHealthCheckFinished(false,
                                             operationId,
                                             QStringLiteral("OpenList /Quark 挂载状态异常：%1")
@@ -357,7 +355,9 @@ void QuarkGatewayManager::checkStorageHealth(const QString &operationId)
 
         emit storageHealthCheckFinished(true,
                                         operationId,
-                                        QStringLiteral("OpenList /Quark 挂载状态正常"));
+                                        status.isEmpty()
+                                            ? QStringLiteral("OpenList 已找到 /Quark 挂载，但未返回 storage status，将继续检查 WebDAV")
+                                            : QStringLiteral("OpenList /Quark 挂载状态正常：status=work"));
     });
 }
 

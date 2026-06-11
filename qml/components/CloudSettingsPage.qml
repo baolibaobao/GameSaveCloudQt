@@ -209,7 +209,7 @@ ColumnLayout {
             Text {
                 Layout.fillWidth: true
                 text: control.savedCookie()
-                      ? "已保存 Cookie；如下载失败、健康检查失败或 Cookie 过期，请粘贴新的 Cookie 后重新连接。"
+                      ? "已保存 Cookie；如明确提示鉴权异常或 Cookie 过期，请粘贴新的 Cookie 后重新连接。"
                       : "首次连接成功后会自动保存配置，之后启动软件会自动连接。"
                 color: control.mutedTextColor
                 font.pixelSize: 13
