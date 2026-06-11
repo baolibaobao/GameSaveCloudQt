@@ -20,12 +20,12 @@ GameSaveCloudQt 是一个 Windows 游戏存档云同步工具，目标是自动�
 - C++20
 - Qt 6 / QML
 - CMake
-- Visual Studio 2022
+- Visual Studio 2026
 - OpenList
 
 ## 构建
 
-推荐使用 Visual Studio 2022 打开项目，并选择 CMake 预设：
+推荐使用 Visual Studio 2026 打开项目，并选择 CMake 预设：
 
 ```text
 Qt-Release
