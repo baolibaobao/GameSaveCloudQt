@@ -68,7 +68,6 @@ OpenList 数据目录：
 %APPDATA%\GameSaveCloudQt\openlist
 ```
 
-发布产物和安装包位于 `release/`，该目录不提交到仓库。
 
 ## 作者
 
